@@ -36,3 +36,14 @@ Phase 1 adds normalized Go contracts for the future Claude API boundary:
 - `internal/anthropicapi`: API-facing request, response, stream event, token-counting, and call option types
 
 This phase intentionally does not implement the API client yet. Client construction, SDK calls, streaming parsing, retries, and error classification come in later phases.
+
+## Phase 2 SDK-backed Claude API client
+
+Phase 2 implements the `internal/anthropicapi.Client` boundary with the official Anthropic Go SDK:
+
+- constructs an SDK-backed Claude client from `core.APIConfig`
+- converts normalized message and token-count requests into SDK parameters
+- normalizes message responses, stream events, usage, and API errors back into `internal/core` types
+- preserves prompt-cache usage accounting with `cache_creation_input_tokens` and `cache_read_input_tokens`
+
+Default tests do not make live Claude API calls. Live smoke tests should stay opt-in through an explicit environment variable such as `ANTHROPIC_API_KEY`.

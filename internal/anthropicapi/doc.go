@@ -1,5 +1,5 @@
 // Package anthropicapi defines the typed boundary for Claude API access.
 //
-// Phase 1 only establishes contracts. Client construction, SDK calls,
-// streaming parsing, retry behavior, and error classification come later.
+// The package exposes SDK-independent request and response contracts plus an
+// SDK-backed client implementation for the Claude Messages API.
 package anthropicapi
