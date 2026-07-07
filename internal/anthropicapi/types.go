@@ -121,6 +121,7 @@ type CallOptions struct {
 	Timeout time.Duration
 	Betas   []string
 	Headers map[string]string
+	Retry   *core.RetryConfig
 }
 
 // CallOption mutates call-level options.
@@ -148,6 +149,19 @@ func WithHeader(name string, value string) CallOption {
 		}
 		opts.Headers[name] = value
 	}
+}
+
+// WithRetryConfig sets a call-specific retry policy.
+func WithRetryConfig(config core.RetryConfig) CallOption {
+	return func(opts *CallOptions) {
+		retry := config
+		opts.Retry = &retry
+	}
+}
+
+// WithoutRetries disables retries for one call.
+func WithoutRetries() CallOption {
+	return WithRetryConfig(core.RetryConfig{MaxRetries: 0})
 }
 
 // ApplyOptions returns concrete call options from functional options.

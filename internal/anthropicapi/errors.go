@@ -26,6 +26,11 @@ func ClassifyError(err error) *core.APIError {
 		return nil
 	}
 
+	var normalized *core.APIError
+	if errors.As(err, &normalized) {
+		return normalized
+	}
+
 	if errors.Is(err, context.Canceled) {
 		return &core.APIError{
 			Kind:      core.APIErrorAbort,

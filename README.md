@@ -47,3 +47,14 @@ Phase 2 implements the `internal/anthropicapi.Client` boundary with the official
 - preserves prompt-cache usage accounting with `cache_creation_input_tokens` and `cache_read_input_tokens`
 
 Default tests do not make live Claude API calls. Live smoke tests should stay opt-in through an explicit environment variable such as `ANTHROPIC_API_KEY`.
+
+## Phase 3 retry and client robustness
+
+Phase 3 adds a bounded retry layer around the SDK-backed client:
+
+- configurable retry defaults live in `internal/core`
+- per-call retry overrides are available through `internal/anthropicapi` call options
+- transient rate-limit, overloaded, timeout, network, and server errors retry with exponential backoff
+- stream requests retry only setup-time failures before any events are returned
+
+Claude Code-specific behavior from the TypeScript runtime, such as fast-mode fallback, OAuth refresh, telemetry, provider credential cache clearing, unattended persistent retries, and model fallback, is intentionally deferred until the surrounding Go runtime layers exist.

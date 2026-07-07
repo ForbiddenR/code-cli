@@ -22,7 +22,11 @@ type SDKClient struct {
 func NewSDKClient(config core.APIConfig) (*SDKClient, error) {
 	config = config.WithDefaults()
 
-	options := []option.RequestOption{option.WithBaseURL(config.BaseURL)}
+	options := []option.RequestOption{
+		option.WithBaseURL(config.BaseURL),
+		// Retry behavior is owned by this package so it stays normalized and testable.
+		option.WithMaxRetries(0),
+	}
 	if config.APIKey != "" {
 		options = append(options, option.WithAPIKey(config.APIKey))
 	}
@@ -49,12 +53,15 @@ func (c *SDKClient) CreateMessage(ctx context.Context, req MessageRequest, opts 
 		return nil, err
 	}
 
+	callOptions := ApplyOptions(opts...)
 	var raw *http.Response
-	requestOptions := append(c.requestOptions(req.Betas, opts...), option.WithResponseInto(&raw))
-
-	message, err := c.client.Messages.New(ctx, params, requestOptions...)
+	message, err := retryAPI(ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (*anthropic.Message, error) {
+		raw = nil
+		requestOptions := append(c.requestOptions(req.Betas, callOptions), option.WithResponseInto(&raw))
+		return c.client.Messages.New(ctx, params, requestOptions...)
+	})
 	if err != nil {
-		return nil, ClassifyError(err)
+		return nil, err
 	}
 
 	response, err := normalizeMessage(message)
@@ -72,15 +79,21 @@ func (c *SDKClient) StreamMessage(ctx context.Context, req MessageRequest, opts 
 		return nil, err
 	}
 
-	streamCtx, cancel := context.WithCancel(ctx)
-	stream := c.client.Messages.NewStreaming(streamCtx, params, c.requestOptions(req.Betas, opts...)...)
-	if err := stream.Err(); err != nil {
-		cancel()
-		_ = stream.Close()
-		return nil, ClassifyError(err)
+	callOptions := ApplyOptions(opts...)
+	stream, err := retryAPI(ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (Stream, error) {
+		streamCtx, cancel := context.WithCancel(ctx)
+		sdkStream := c.client.Messages.NewStreaming(streamCtx, params, c.requestOptions(req.Betas, callOptions)...)
+		if err := sdkStream.Err(); err != nil {
+			cancel()
+			_ = sdkStream.Close()
+			return nil, err
+		}
+		return newSDKStream(streamCtx, cancel, sdkStream), nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	return newSDKStream(streamCtx, cancel, stream), nil
+	return stream, nil
 }
 
 // CountTokens sends a Messages API token-counting request.
@@ -90,12 +103,15 @@ func (c *SDKClient) CountTokens(ctx context.Context, req TokenCountRequest, opts
 		return nil, err
 	}
 
+	callOptions := ApplyOptions(opts...)
 	var raw *http.Response
-	requestOptions := append(c.requestOptions(req.Betas, opts...), option.WithResponseInto(&raw))
-
-	count, err := c.client.Messages.CountTokens(ctx, params, requestOptions...)
+	count, err := retryAPI(ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (*anthropic.MessageTokensCount, error) {
+		raw = nil
+		requestOptions := append(c.requestOptions(req.Betas, callOptions), option.WithResponseInto(&raw))
+		return c.client.Messages.CountTokens(ctx, params, requestOptions...)
+	})
 	if err != nil {
-		return nil, ClassifyError(err)
+		return nil, err
 	}
 
 	return &TokenCountResponse{
@@ -104,8 +120,17 @@ func (c *SDKClient) CountTokens(ctx context.Context, req TokenCountRequest, opts
 	}, nil
 }
 
-func (c *SDKClient) requestOptions(betas []string, options ...CallOption) []option.RequestOption {
-	callOptions := ApplyOptions(options...)
+func (c *SDKClient) retryConfig(callOptions CallOptions) core.RetryConfig {
+	if callOptions.Retry != nil {
+		return callOptions.Retry.WithDefaults()
+	}
+	if c.config.Retry != nil {
+		return c.config.Retry.WithDefaults()
+	}
+	return core.DefaultRetryConfig()
+}
+
+func (c *SDKClient) requestOptions(betas []string, callOptions CallOptions) []option.RequestOption {
 	requestOptions := make([]option.RequestOption, 0, len(betas)+len(callOptions.Betas)+len(callOptions.Headers)+1)
 
 	if callOptions.Timeout > 0 {

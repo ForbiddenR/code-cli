@@ -9,12 +9,20 @@ type APIConfig struct {
 	UserAgent      string
 	DefaultHeaders map[string]string
 	Betas          []string
+	Retry          *RetryConfig
 }
 
 // WithDefaults returns a copy with stable defaults applied.
 func (c APIConfig) WithDefaults() APIConfig {
 	if c.BaseURL == "" {
 		c.BaseURL = DefaultBaseURL
+	}
+	if c.Retry == nil {
+		retry := DefaultRetryConfig()
+		c.Retry = &retry
+	} else {
+		retry := c.Retry.WithDefaults()
+		c.Retry = &retry
 	}
 	return c
 }
