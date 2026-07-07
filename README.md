@@ -58,3 +58,14 @@ Phase 3 adds a bounded retry layer around the SDK-backed client:
 - stream requests retry only setup-time failures before any events are returned
 
 Claude Code-specific behavior from the TypeScript runtime, such as fast-mode fallback, OAuth refresh, telemetry, provider credential cache clearing, unattended persistent retries, and model fallback, is intentionally deferred until the surrounding Go runtime layers exist.
+
+## Phase 4 control-plane API endpoints
+
+Phase 4 adds a separate `internal/controlplane` package for authenticated non-Messages HTTP endpoints from the TypeScript API layer:
+
+- usage utilization from `usage.ts`
+- admin request create/list/eligibility flows from `adminRequests.ts`
+- bootstrap fetch/parsing from `bootstrap.ts`
+- first-token-date fetch/validation from `firstTokenDate.ts`
+
+The package uses an injectable standard-library HTTP client and typed JSON contracts so behavior can be covered with `httptest` and no live Claude API calls. Runtime-coupled behavior remains deferred, including logging, prompt-cache break detection, files API upload/download behavior, OAuth refresh, subscriber/profile gating, and persistence into global config.

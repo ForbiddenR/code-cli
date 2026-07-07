@@ -80,7 +80,7 @@ func (c *SDKClient) StreamMessage(ctx context.Context, req MessageRequest, opts 
 	}
 
 	callOptions := ApplyOptions(opts...)
-	stream, err := retryAPI(ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (Stream, error) {
+	stream, err := retryAPI[Stream](ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (Stream, error) {
 		streamCtx, cancel := context.WithCancel(ctx)
 		sdkStream := c.client.Messages.NewStreaming(streamCtx, params, c.requestOptions(req.Betas, callOptions)...)
 		if err := sdkStream.Err(); err != nil {
