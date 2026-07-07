@@ -16,6 +16,7 @@ const (
 	DefaultMaxRetries = 3
 	DefaultBaseDelay  = 500 * time.Millisecond
 	DefaultTimeout    = 60 * time.Second
+	MaxFileSizeBytes  = 500 * 1024 * 1024
 )
 
 // Config contains process-level settings for Files API calls.

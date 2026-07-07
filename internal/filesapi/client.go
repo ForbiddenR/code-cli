@@ -149,6 +149,10 @@ func (c *Client) ListFilesCreatedAfter(ctx context.Context, afterCreatedAt strin
 }
 
 func (c *Client) do(ctx context.Context, method string, path string, query url.Values, body io.Reader) (*http.Response, error) {
+	return c.doWithHeaders(ctx, method, path, query, body, nil)
+}
+
+func (c *Client) doWithHeaders(ctx context.Context, method string, path string, query url.Values, body io.Reader, headers http.Header) (*http.Response, error) {
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
@@ -162,6 +166,11 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 	request.Header.Set("anthropic-beta", FilesAPIBetaHeader)
 	if c.oauthToken != "" {
 		request.Header.Set("Authorization", "Bearer "+c.oauthToken)
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
 	}
 	return c.httpClient.Do(request)
 }

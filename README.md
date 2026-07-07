@@ -135,3 +135,15 @@ Phase 10 starts migrating the public Files API client from `filesApi.ts` into a 
 - download path construction under `{basePath}/{sessionID}/uploads`, including traversal rejection and redundant prefix stripping
 
 Upload, filesystem write orchestration, download concurrency, analytics events, debug logging, environment-driven base URL selection, and BYOC/1P mode integration remain deferred to later Files API phases.
+
+## Phase 11 Files API upload foundation
+
+Phase 11 adds the single-file upload path from `filesApi.ts` to `internal/filesapi`:
+
+- multipart `POST /v1/files` upload with `file` and `purpose=user_data` parts
+- local file read and size validation against the TypeScript 500 MB limit
+- typed `UploadResult` success/failure output matching the TypeScript caller shape
+- non-retryable handling for auth, forbidden, and too-large responses
+- bounded retry for transient upload failures, rebuilding the multipart body for each attempt
+
+Batch upload orchestration, concurrency limiting, filesystem download/save helpers, analytics events, debug logging, cancellation wiring into higher-level commands, and environment-driven base URL selection remain deferred to later runtime integration phases.
