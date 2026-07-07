@@ -5,7 +5,11 @@ import (
 	"time"
 )
 
-const DefaultTimeout = 5 * time.Second
+const (
+	// DefaultBaseURL is the production OAuth BASE_API_URL used by Claude Code control-plane endpoints.
+	DefaultBaseURL = "https://api.anthropic.com"
+	DefaultTimeout = 5 * time.Second
+)
 
 // Config contains process-level settings for authenticated control-plane API calls.
 type Config struct {

@@ -2,8 +2,10 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type AdminRequestType string
@@ -51,6 +53,10 @@ type AdminRequestEligibility struct {
 
 // CreateAdminRequest creates an admin request for an organization.
 func (c *Client) CreateAdminRequest(ctx context.Context, orgUUID string, params AdminRequestCreateParams, opts ...CallOption) (*AdminRequest, error) {
+	if err := requireOrgUUID(orgUUID); err != nil {
+		return nil, err
+	}
+
 	var response AdminRequest
 	path := "/api/oauth/organizations/" + url.PathEscape(orgUUID) + "/admin_requests"
 	options := appendOrganizationHeader(orgUUID, opts)
@@ -62,6 +68,10 @@ func (c *Client) CreateAdminRequest(ctx context.Context, orgUUID string, params 
 
 // GetMyAdminRequests lists admin requests for the authenticated user.
 func (c *Client) GetMyAdminRequests(ctx context.Context, orgUUID string, requestType AdminRequestType, statuses []AdminRequestStatus, opts ...CallOption) ([]AdminRequest, error) {
+	if err := requireOrgUUID(orgUUID); err != nil {
+		return nil, err
+	}
+
 	query := url.Values{}
 	query.Set("request_type", string(requestType))
 	for _, status := range statuses {
@@ -79,6 +89,10 @@ func (c *Client) GetMyAdminRequests(ctx context.Context, orgUUID string, request
 
 // CheckAdminRequestEligibility checks whether an admin request type is allowed.
 func (c *Client) CheckAdminRequestEligibility(ctx context.Context, orgUUID string, requestType AdminRequestType, opts ...CallOption) (*AdminRequestEligibility, error) {
+	if err := requireOrgUUID(orgUUID); err != nil {
+		return nil, err
+	}
+
 	query := url.Values{}
 	query.Set("request_type", string(requestType))
 
@@ -91,10 +105,14 @@ func (c *Client) CheckAdminRequestEligibility(ctx context.Context, orgUUID strin
 	return &response, nil
 }
 
-func appendOrganizationHeader(orgUUID string, opts []CallOption) []CallOption {
-	if orgUUID == "" {
-		return opts
+func requireOrgUUID(orgUUID string) error {
+	if strings.TrimSpace(orgUUID) == "" {
+		return fmt.Errorf("organization uuid is required")
 	}
+	return nil
+}
+
+func appendOrganizationHeader(orgUUID string, opts []CallOption) []CallOption {
 	options := make([]CallOption, 0, len(opts)+1)
 	options = append(options, opts...)
 	options = append(options, WithHeader("x-organization-uuid", orgUUID))

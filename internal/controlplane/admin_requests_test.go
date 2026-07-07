@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,43 @@ func TestGetMyAdminRequestsQuery(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("requests = %#v", got)
+	}
+}
+
+func TestGetMyAdminRequestsNullResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`null`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, Config{})
+	got, err := client.GetMyAdminRequests(context.Background(), "org-123", AdminRequestLimitIncrease, nil)
+	if err != nil {
+		t.Fatalf("GetMyAdminRequests() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("requests = %#v", got)
+	}
+}
+
+func TestAdminRequestMethodsRejectEmptyOrgUUID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatalf("server should not be called")
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, Config{})
+	_, err := client.CreateAdminRequest(context.Background(), "  ", AdminRequestCreateParams{RequestType: AdminRequestLimitIncrease})
+	if err == nil || !strings.Contains(err.Error(), "organization uuid is required") {
+		t.Fatalf("CreateAdminRequest() error = %v", err)
+	}
+	_, err = client.GetMyAdminRequests(context.Background(), "", AdminRequestLimitIncrease, nil)
+	if err == nil || !strings.Contains(err.Error(), "organization uuid is required") {
+		t.Fatalf("GetMyAdminRequests() error = %v", err)
+	}
+	_, err = client.CheckAdminRequestEligibility(context.Background(), "\t", AdminRequestSeatUpgrade)
+	if err == nil || !strings.Contains(err.Error(), "organization uuid is required") {
+		t.Fatalf("CheckAdminRequestEligibility() error = %v", err)
 	}
 }
 

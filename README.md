@@ -69,3 +69,13 @@ Phase 4 adds a separate `internal/controlplane` package for authenticated non-Me
 - first-token-date fetch/validation from `firstTokenDate.ts`
 
 The package uses an injectable standard-library HTTP client and typed JSON contracts so behavior can be covered with `httptest` and no live Claude API calls. Runtime-coupled behavior remains deferred, including logging, prompt-cache break detection, files API upload/download behavior, OAuth refresh, subscriber/profile gating, and persistence into global config.
+
+## Phase 5 control-plane hardening
+
+Phase 5 tightens the Phase 4 control-plane layer:
+
+- control-plane calls use an explicit production OAuth base URL default and still allow caller-provided staging/local/custom base URLs
+- organization-scoped admin request methods reject empty organization UUIDs before sending requests
+- tests cover malformed success responses, empty response bodies, request ID fallback headers, base URL path joining, and top-level `null` admin request lists
+
+OAuth environment resolution, token refresh, and global config persistence remain deferred to a future auth/config phase.

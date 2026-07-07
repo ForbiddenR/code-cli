@@ -69,9 +69,73 @@ func TestClientErrorNormalization(t *testing.T) {
 	}
 }
 
+func TestNewClientDefaultBaseURL(t *testing.T) {
+	client, err := NewClient(Config{})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if got := client.endpoint("/api/oauth/usage", nil); got != DefaultBaseURL+"/api/oauth/usage" {
+		t.Fatalf("endpoint = %q", got)
+	}
+}
+
 func TestNewClientRejectsInvalidBaseURL(t *testing.T) {
 	if _, err := NewClient(Config{BaseURL: "://bad"}); err == nil {
 		t.Fatalf("expected invalid base URL error")
+	}
+}
+
+func TestClientEndpointJoinsBasePath(t *testing.T) {
+	client, err := NewClient(Config{BaseURL: "https://example.test/base/"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if got := client.endpoint("/api/oauth/usage", nil); got != "https://example.test/base/api/oauth/usage" {
+		t.Fatalf("endpoint = %q", got)
+	}
+}
+
+func TestClientRequestIDFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("x-request-id", "req_fallback")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, Config{})
+	err := client.doJSON(context.Background(), http.MethodGet, "/test", nil, nil, nil)
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.RequestID != "req_fallback" || apiErr.Kind != core.APIErrorServer {
+		t.Fatalf("api error = %#v", apiErr)
+	}
+}
+
+func TestClientMalformedSuccessJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, Config{})
+	var out map[string]any
+	if err := client.doJSON(context.Background(), http.MethodGet, "/test", nil, nil, &out); err == nil {
+		t.Fatalf("expected decode error")
+	}
+}
+
+func TestClientEmptySuccessBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server, Config{})
+	var out map[string]any
+	if err := client.doJSON(context.Background(), http.MethodGet, "/test", nil, nil, &out); err == nil {
+		t.Fatalf("expected decode error")
 	}
 }
 

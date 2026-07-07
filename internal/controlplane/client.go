@@ -31,7 +31,7 @@ type Client struct {
 func NewClient(config Config) (*Client, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
-		baseURL = core.DefaultBaseURL
+		baseURL = DefaultBaseURL
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -135,8 +135,7 @@ func classifyTransportError(err error) *core.APIError {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &core.APIError{Kind: core.APIErrorTimeout, Message: err.Error(), Retryable: true, Cause: err}
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		kind := core.APIErrorNetwork
 		if netErr.Timeout() {
 			kind = core.APIErrorTimeout
