@@ -79,3 +79,12 @@ Phase 5 tightens the Phase 4 control-plane layer:
 - tests cover malformed success responses, empty response bodies, request ID fallback headers, base URL path joining, and top-level `null` admin request lists
 
 OAuth environment resolution, token refresh, and global config persistence remain deferred to a future auth/config phase.
+
+## Phase 6 additional control-plane endpoints
+
+Phase 6 expands the typed control-plane surface with two more small HTTP endpoints from the TypeScript API layer:
+
+- ultrareview quota lookup from `ultrareviewQuota.ts`, including organization UUID validation and `x-organization-uuid` propagation
+- overage credit grant lookup from `overageCreditGrant.ts`, including organization-scoped path validation and USD grant amount formatting
+
+The Go layer intentionally exposes direct fetch/format primitives only. Subscriber gating, privacy checks, cache TTLs, global config persistence, and fire-and-forget refresh behavior remain deferred until auth/config/runtime infrastructure exists.
