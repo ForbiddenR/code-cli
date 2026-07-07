@@ -100,3 +100,14 @@ Phase 7 migrates the direct guest-pass referral HTTP calls from `referral.ts`:
 - referrer reward formatting for the currency symbols used by the TypeScript UI
 
 The Go package still does not implement subscriber/max-plan gating, in-memory fetch de-duplication, 24-hour cache expiry, background refresh, or global config persistence. Those remain deferred to the future auth/config/runtime layer.
+
+## Phase 8 metrics opt-out endpoint
+
+Phase 8 migrates the direct metrics-enabled check from `metricsOptOut.ts`:
+
+- metrics logging status lookup at `/api/claude_code/organizations/metrics_enabled`
+- typed `metrics_logging_enabled` response parsing
+- request behavior matching the TypeScript direct fetch path, including JSON content type and a 5-second endpoint timeout
+- auth/user-agent propagation through the existing control-plane client header configuration
+
+The Go package intentionally exposes only the direct fetch primitive. OAuth 401 retry, profile-scope gating, essential-traffic checks, in-memory memoization, disk cache TTLs, background refresh, and config persistence remain deferred to the future auth/config/runtime layer.
