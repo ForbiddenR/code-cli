@@ -123,3 +123,15 @@ Phase 9 migrates the direct Grove HTTP calls and notice decision helper from `gr
 - pure `CalculateShouldShowGrove` logic for deciding whether the notice should render
 
 The Go package still does not implement OAuth 401 retry, essential-traffic gating, consumer-subscriber qualification, session memoization, 24-hour cache refresh, analytics, stderr messaging, graceful shutdown, or global config persistence. Those remain runtime-layer responsibilities.
+
+## Phase 10 Files API read/list foundation
+
+Phase 10 starts migrating the public Files API client from `filesApi.ts` into a new `internal/filesapi` package:
+
+- Files API client construction with injectable `http.Client`, configurable base URL, OAuth bearer token, and TypeScript-compatible Anthropic version/beta headers
+- file content download from `/v1/files/{file_id}/content` with bounded retry for transient failures
+- file metadata listing from `/v1/files` with `after_created_at` filtering and `after_id` pagination
+- file attachment spec parsing for `file_id:relative_path` inputs, including space-expanded specs
+- download path construction under `{basePath}/{sessionID}/uploads`, including traversal rejection and redundant prefix stripping
+
+Upload, filesystem write orchestration, download concurrency, analytics events, debug logging, environment-driven base URL selection, and BYOC/1P mode integration remain deferred to later Files API phases.
