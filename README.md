@@ -88,3 +88,15 @@ Phase 6 expands the typed control-plane surface with two more small HTTP endpoin
 - overage credit grant lookup from `overageCreditGrant.ts`, including organization-scoped path validation and USD grant amount formatting
 
 The Go layer intentionally exposes direct fetch/format primitives only. Subscriber gating, privacy checks, cache TTLs, global config persistence, and fire-and-forget refresh behavior remain deferred until auth/config/runtime infrastructure exists.
+
+## Phase 7 referral control-plane endpoints
+
+Phase 7 migrates the direct guest-pass referral HTTP calls from `referral.ts`:
+
+- referral eligibility lookup at `/api/oauth/organizations/{orgUUID}/referral/eligibility`
+- referral redemptions lookup at `/api/oauth/organizations/{orgUUID}/referral/redemptions`
+- default campaign handling for `claude_code_guest_pass`
+- organization UUID validation, `x-organization-uuid` propagation, and endpoint-specific timeouts
+- referrer reward formatting for the currency symbols used by the TypeScript UI
+
+The Go package still does not implement subscriber/max-plan gating, in-memory fetch de-duplication, 24-hour cache expiry, background refresh, or global config persistence. Those remain deferred to the future auth/config/runtime layer.
