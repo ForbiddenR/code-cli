@@ -111,3 +111,15 @@ Phase 8 migrates the direct metrics-enabled check from `metricsOptOut.ts`:
 - auth/user-agent propagation through the existing control-plane client header configuration
 
 The Go package intentionally exposes only the direct fetch primitive. OAuth 401 retry, profile-scope gating, essential-traffic checks, in-memory memoization, disk cache TTLs, background refresh, and config persistence remain deferred to the future auth/config/runtime layer.
+
+## Phase 9 Grove control-plane endpoints
+
+Phase 9 migrates the direct Grove HTTP calls and notice decision helper from `grove.ts`:
+
+- account settings lookup at `/api/oauth/account/settings`
+- Grove notice viewed marker at `/api/oauth/account/grove_notice_viewed`
+- Grove setting update through `PATCH /api/oauth/account/settings`
+- Grove notice config lookup at `/api/claude_code_grove`, including TypeScript-compatible defaults for omitted `domain_excluded` and `notice_is_grace_period`
+- pure `CalculateShouldShowGrove` logic for deciding whether the notice should render
+
+The Go package still does not implement OAuth 401 retry, essential-traffic gating, consumer-subscriber qualification, session memoization, 24-hour cache refresh, analytics, stderr messaging, graceful shutdown, or global config persistence. Those remain runtime-layer responsibilities.
