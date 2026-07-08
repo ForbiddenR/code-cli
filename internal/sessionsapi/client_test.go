@@ -106,6 +106,65 @@ func TestListCodeSessions(t *testing.T) {
 	}
 }
 
+func TestCodeSessionFromResource(t *testing.T) {
+	title := ""
+	revision := "feature-branch"
+	session := SessionResource{
+		ID:            "sess_1",
+		Title:         &title,
+		SessionStatus: SessionStatusRunning,
+		CreatedAt:     "2026-01-01T00:00:00Z",
+		UpdatedAt:     "2026-01-02T00:00:00Z",
+		SessionContext: SessionContext{Sources: []SessionContextSource{{
+			Type:     "git_repository",
+			URL:      "git@github.com:owner/repo.git",
+			Revision: &revision,
+		}}},
+	}
+
+	codeSession := CodeSessionFromResource(session)
+	if codeSession.ID != "sess_1" || codeSession.Title != "Untitled" || codeSession.Status != SessionStatusRunning {
+		t.Fatalf("code session = %#v", codeSession)
+	}
+	if len(codeSession.Turns) != 0 {
+		t.Fatalf("turns = %#v", codeSession.Turns)
+	}
+	if codeSession.Repo == nil || codeSession.Repo.Owner.Login != "owner" || codeSession.Repo.Name != "repo" || codeSession.Repo.DefaultBranch != "feature-branch" {
+		t.Fatalf("repo = %#v", codeSession.Repo)
+	}
+}
+
+func TestGetBranchFromSession(t *testing.T) {
+	session := SessionResource{SessionContext: SessionContext{Outcomes: []Outcome{
+		{Type: "other", GitInfo: OutcomeGitInfo{Branches: []string{"ignored"}}},
+		{Type: "git_repository", GitInfo: OutcomeGitInfo{Branches: []string{"main", "dev"}}},
+	}}}
+
+	branch, ok := GetBranchFromSession(session)
+	if !ok || branch != "main" {
+		t.Fatalf("GetBranchFromSession = (%q, %v)", branch, ok)
+	}
+}
+
+func TestGetBranchFromSessionMissing(t *testing.T) {
+	tests := []struct {
+		name    string
+		session SessionResource
+	}{
+		{name: "nil outcomes"},
+		{name: "no git outcome", session: SessionResource{SessionContext: SessionContext{Outcomes: []Outcome{{Type: "other"}}}}},
+		{name: "empty branches", session: SessionResource{SessionContext: SessionContext{Outcomes: []Outcome{{Type: "git_repository"}}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			branch, ok := GetBranchFromSession(test.session)
+			if ok || branch != "" {
+				t.Fatalf("GetBranchFromSession = (%q, %v)", branch, ok)
+			}
+		})
+	}
+}
+
 func TestListCodeSessionsRetriesServerErrors(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

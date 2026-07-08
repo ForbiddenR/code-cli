@@ -85,7 +85,7 @@ func (c *Client) ListCodeSessions(ctx context.Context) ([]CodeSession, error) {
 	}
 	sessions := make([]CodeSession, 0, len(response.Data))
 	for _, session := range response.Data {
-		sessions = append(sessions, transformCodeSession(session))
+		sessions = append(sessions, CodeSessionFromResource(session))
 	}
 	return sessions, nil
 }
@@ -279,7 +279,8 @@ func decodeGETResponse(response *http.Response, out any) (bool, error) {
 	return response.StatusCode >= 500, responseError(response)
 }
 
-func transformCodeSession(session SessionResource) CodeSession {
+// CodeSessionFromResource transforms a raw Sessions API resource into the legacy code-session shape.
+func CodeSessionFromResource(session SessionResource) CodeSession {
 	title := "Untitled"
 	if session.Title != nil && *session.Title != "" {
 		title = *session.Title
@@ -294,6 +295,17 @@ func transformCodeSession(session SessionResource) CodeSession {
 		CreatedAt:   session.CreatedAt,
 		UpdatedAt:   session.UpdatedAt,
 	}
+}
+
+// GetBranchFromSession returns the first branch from a session's git repository outcomes.
+func GetBranchFromSession(session SessionResource) (string, bool) {
+	for _, outcome := range session.SessionContext.Outcomes {
+		if outcome.Type != "git_repository" || len(outcome.GitInfo.Branches) == 0 {
+			continue
+		}
+		return outcome.GitInfo.Branches[0], true
+	}
+	return "", false
 }
 
 func repoFromSources(sources []SessionContextSource) *Repo {

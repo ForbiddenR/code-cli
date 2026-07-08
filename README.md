@@ -297,3 +297,15 @@ Phase 24 adds the remote-session title update path from `utils/teleport/api.ts`:
 - deterministic `httptest` coverage verifies request method/path, headers, JSON body shape, API-error handling, and local session-ID validation
 
 Branch extraction helpers, OAuth config parity, OAuth token/profile client integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+
+## Phase 25 session resource parsing and branch extraction
+
+Phase 25 completes the remaining pure helper slice from `utils/teleport/api.ts` for Sessions API resources:
+
+- `CodeSessionFromResource` is now an exported helper for transforming raw `SessionResource` values into legacy code-session UI resources
+- list-session reads reuse `CodeSessionFromResource`, keeping direct helper usage and endpoint behavior consistent
+- `GetBranchFromSession` extracts the first branch from the first `git_repository` outcome, matching the TypeScript `getBranchFromSession` helper
+- branch extraction safely handles nil outcomes, non-git outcomes, and git outcomes with no branches
+- deterministic tests cover code-session transformation, GitHub source parsing, first-branch extraction, and missing-branch cases
+
+OAuth config parity, OAuth token/profile client integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
