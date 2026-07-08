@@ -26,6 +26,8 @@ type Client struct {
 	baseDelay         time.Duration
 	sleep             func(time.Duration)
 	afterLastCompact  bool
+	teleportLimit     int
+	maxTeleportPages  int
 	lastUUIDBySession map[string]string
 }
 
@@ -63,6 +65,14 @@ func NewClient(config Config) (*Client, error) {
 	if sleep == nil {
 		sleep = time.Sleep
 	}
+	teleportLimit := config.TeleportLimit
+	if teleportLimit <= 0 {
+		teleportLimit = DefaultTeleportLimit
+	}
+	maxTeleportPages := config.MaxTeleportPages
+	if maxTeleportPages <= 0 {
+		maxTeleportPages = DefaultMaxPages
+	}
 
 	return &Client{
 		baseURL:           parsed,
@@ -74,6 +84,8 @@ func NewClient(config Config) (*Client, error) {
 		baseDelay:         baseDelay,
 		sleep:             sleep,
 		afterLastCompact:  config.AfterLastCompact,
+		teleportLimit:     teleportLimit,
+		maxTeleportPages:  maxTeleportPages,
 		lastUUIDBySession: map[string]string{},
 	}, nil
 }
@@ -149,6 +161,41 @@ func (c *Client) FetchSessionLogs(ctx context.Context, sessionID string) ([]Entr
 		return []Entry{}, nil
 	}
 	return nil, responseError(response)
+}
+
+// FetchTeleportEvents fetches transcript worker events from the CCR v2 sessions API.
+func (c *Client) FetchTeleportEvents(ctx context.Context, sessionID string) ([]Entry, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+
+	var all []Entry
+	var cursor string
+	for page := 0; page < c.maxTeleportPages; page++ {
+		query := url.Values{}
+		query.Set("limit", fmt.Sprint(c.teleportLimit))
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		response, err := c.do(ctx, http.MethodGet, "/v1/code/sessions/"+url.PathEscape(sessionID)+"/teleport-events", query, nil, c.authHeaders())
+		if err != nil {
+			return nil, err
+		}
+
+		entries, nextCursor, stop, err := decodeTeleportEventsPage(response)
+		if err != nil {
+			return nil, err
+		}
+		if stop {
+			return all, nil
+		}
+		all = append(all, entries...)
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return all, nil
 }
 
 // ClearSession clears cached optimistic ordering state for one session.
@@ -266,6 +313,42 @@ func decodeLoglines(reader io.Reader) ([]Entry, error) {
 		entries = append(entries, Entry(logline))
 	}
 	return entries, nil
+}
+
+func decodeTeleportEventsPage(response *http.Response) ([]Entry, string, bool, error) {
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil, "", true, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, "", false, responseError(response)
+	}
+
+	var pageResponse struct {
+		Data []struct {
+			Payload json.RawMessage `json:"payload"`
+		} `json:"data"`
+		NextCursor *string `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&pageResponse); err != nil {
+		return nil, "", false, fmt.Errorf("decode teleport events: %w", err)
+	}
+	if pageResponse.Data == nil {
+		return nil, "", false, fmt.Errorf("decode teleport events: missing data")
+	}
+
+	entries := make([]Entry, 0, len(pageResponse.Data))
+	for _, event := range pageResponse.Data {
+		payload := bytes.TrimSpace(event.Payload)
+		if len(payload) == 0 || bytes.Equal(payload, []byte("null")) {
+			continue
+		}
+		entries = append(entries, Entry(payload))
+	}
+	if pageResponse.NextCursor == nil {
+		return entries, "", false, nil
+	}
+	return entries, *pageResponse.NextCursor, false, nil
 }
 
 func findLastUUID(entries []Entry) string {

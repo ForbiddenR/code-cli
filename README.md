@@ -183,3 +183,16 @@ Phase 14 starts migrating the transcript persistence paths from `sessionIngress.
 - deterministic `httptest` coverage for fetch, append, 401 handling, 404-as-empty, conflict recovery, and cache clearing
 
 JWT discovery, OAuth token refresh, per-session sequential execution wrappers, diagnostics/debug logging, Teleport Events pagination, and integration with the higher-level transcript runtime remain deferred to later phases.
+
+## Phase 15 Teleport Events foundation
+
+Phase 15 extends `internal/sessioningress` with the CCR v2 Teleport Events read path from `sessionIngress.ts`:
+
+- transcript event fetch from `/v1/code/sessions/{sessionID}/teleport-events`
+- bearer auth and optional organization UUID propagation through the shared session ingress client
+- pagination with `limit=1000`, opaque cursor echoing, and a 100-page guard
+- null payload filtering while preserving raw transcript payloads as `Entry` values
+- TypeScript-compatible 404 behavior: first-page 404 returns no events, while later-page 404 returns the partial transcript already fetched
+- deterministic tests for pagination, null payload filtering, 404 handling, auth errors, and the page cap
+
+JWT discovery, OAuth token refresh, diagnostics/debug logging, fallback coordination between Teleport Events and legacy session ingress, and integration with the higher-level transcript runtime remain deferred to later phases.

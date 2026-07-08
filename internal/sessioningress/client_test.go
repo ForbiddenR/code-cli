@@ -165,6 +165,114 @@ func TestAppendSessionLogRefetchesOnConflictWithoutHeader(t *testing.T) {
 	}
 }
 
+func TestFetchTeleportEvents(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/code/sessions/session_123/teleport-events" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		queries = append(queries, r.URL.RawQuery)
+		if r.URL.Query().Get("cursor") == "" {
+			if r.URL.Query().Get("limit") != "1000" {
+				t.Fatalf("limit = %q", r.URL.Query().Get("limit"))
+			}
+			_, _ = w.Write([]byte(`{"data":[{"payload":{"uuid":"uuid_1"}},{"payload":null}],"next_cursor":"next_page"}`))
+			return
+		}
+		if r.URL.Query().Get("cursor") != "next_page" {
+			t.Fatalf("cursor = %q", r.URL.Query().Get("cursor"))
+		}
+		_, _ = w.Write([]byte(`{"data":[{"payload":{"uuid":"uuid_2"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.FetchTeleportEvents(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchTeleportEvents() error = %v", err)
+	}
+	if len(got) != 2 || !strings.Contains(string(got[0]), "uuid_1") || !strings.Contains(string(got[1]), "uuid_2") {
+		t.Fatalf("events = %#v", got)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("queries = %#v", queries)
+	}
+}
+
+func TestFetchTeleportEventsNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.FetchTeleportEvents(context.Background(), "session_missing")
+	if err != nil {
+		t.Fatalf("FetchTeleportEvents() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestFetchTeleportEventsNotFoundAfterFirstPageReturnsPartial(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"data":[{"payload":{"uuid":"uuid_1"}}],"next_cursor":"next_page"}`))
+			return
+		}
+		http.NotFound(w, nil)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, err := client.FetchTeleportEvents(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchTeleportEvents() error = %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(string(got[0]), "uuid_1") {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestFetchTeleportEventsUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	_, err := client.FetchTeleportEvents(context.Background(), "session_123")
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != core.APIErrorAuth {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestFetchTeleportEventsPageCap(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"data":[{"payload":{"uuid":"uuid_1"}}],"next_cursor":"again"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	client.maxTeleportPages = 2
+	got, err := client.FetchTeleportEvents(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchTeleportEvents() error = %v", err)
+	}
+	if len(got) != 2 || calls != 2 {
+		t.Fatalf("events = %#v, calls = %d", got, calls)
+	}
+}
+
 func TestClearSessions(t *testing.T) {
 	client, err := NewClient(Config{BaseURL: "https://example.test"})
 	if err != nil {

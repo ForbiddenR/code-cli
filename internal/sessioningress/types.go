@@ -7,10 +7,12 @@ import (
 
 const (
 	// DefaultBaseURL is the production OAuth BASE_API_URL used by session ingress endpoints.
-	DefaultBaseURL    = "https://api.anthropic.com"
-	DefaultTimeout    = 20 * time.Second
-	DefaultMaxRetries = 10
-	DefaultBaseDelay  = 500 * time.Millisecond
+	DefaultBaseURL       = "https://api.anthropic.com"
+	DefaultTimeout       = 20 * time.Second
+	DefaultMaxRetries    = 10
+	DefaultBaseDelay     = 500 * time.Millisecond
+	DefaultTeleportLimit = 1000
+	DefaultMaxPages      = 100
 )
 
 // Config contains process-level settings for session ingress calls.
@@ -24,6 +26,8 @@ type Config struct {
 	BaseDelay        time.Duration
 	Sleep            func(time.Duration)
 	AfterLastCompact bool
+	TeleportLimit    int
+	MaxTeleportPages int
 }
 
 // Entry is one raw transcript entry returned by session ingress.
