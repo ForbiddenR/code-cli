@@ -147,3 +147,15 @@ Phase 11 adds the single-file upload path from `filesApi.ts` to `internal/filesa
 - bounded retry for transient upload failures, rebuilding the multipart body for each attempt
 
 Batch upload orchestration, concurrency limiting, filesystem download/save helpers, analytics events, debug logging, cancellation wiring into higher-level commands, and environment-driven base URL selection remain deferred to later runtime integration phases.
+
+## Phase 12 Files API session orchestration
+
+Phase 12 adds the next Files API orchestration layer around the read/list and upload primitives:
+
+- download-and-save support that writes Files API content under `{basePath}/{sessionID}/uploads`
+- session download orchestration with bounded concurrency and stable result ordering
+- session upload orchestration for local files with bounded concurrency and stable result ordering
+- typed `DownloadResult` and `LocalFile` shapes for higher-level runtime integration
+- deterministic filesystem and HTTP tests for success, invalid paths, ordering, and multipart batch uploads
+
+Analytics events, debug logging, command-layer cancellation UX, environment-driven base URL selection, BYOC/1P mode decisions, and integration with higher-level session startup/runtime flows remain deferred to future phases.

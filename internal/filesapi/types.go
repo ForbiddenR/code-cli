@@ -13,10 +13,11 @@ const (
 	// AnthropicVersion is the API version header used by the TypeScript Files API client.
 	AnthropicVersion = "2023-06-01"
 
-	DefaultMaxRetries = 3
-	DefaultBaseDelay  = 500 * time.Millisecond
-	DefaultTimeout    = 60 * time.Second
-	MaxFileSizeBytes  = 500 * 1024 * 1024
+	DefaultMaxRetries  = 3
+	DefaultBaseDelay   = 500 * time.Millisecond
+	DefaultTimeout     = 60 * time.Second
+	DefaultConcurrency = 5
+	MaxFileSizeBytes   = 500 * 1024 * 1024
 )
 
 // Config contains process-level settings for Files API calls.
@@ -41,4 +42,19 @@ type FileMetadata struct {
 	Filename string
 	FileID   string
 	Size     int64
+}
+
+// DownloadResult describes the outcome of downloading and saving one file.
+type DownloadResult struct {
+	FileID       string
+	Path         string
+	Success      bool
+	Error        string
+	BytesWritten int64
+}
+
+// LocalFile describes a local file to upload with its session-relative path.
+type LocalFile struct {
+	Path         string
+	RelativePath string
 }
