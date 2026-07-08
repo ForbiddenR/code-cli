@@ -336,7 +336,7 @@ Phase 27 adds the OAuth token and profile client behavior from `services/oauth/c
 - helper functions preserve TypeScript behavior for scope parsing, Claude.ai auth detection, OAuth expiration buffering, and profile-to-subscription mapping
 - deterministic `httptest` coverage verifies URL construction, request bodies and headers, token refresh/profile sequencing, API-key profile reads, roles/API-key endpoints, helper behavior, validation, and normalized API errors
 
-Wiring OAuth credential storage, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+Wiring prompt-cache diagnostics and remaining teleport integration wiring remain deferred to later phases.
 
 ## Phase 28 auth file descriptor credential reader
 
@@ -350,4 +350,18 @@ Phase 28 migrates the shared CCR file-descriptor credential reader from `utils/a
 - `internal/sessioningress` now reuses the shared descriptor reader for its legacy websocket auth descriptor while preserving `CLAUDE_CODE_SESSION_ACCESS_TOKEN` precedence and `CLAUDE_SESSION_INGRESS_TOKEN_FILE` overrides
 - deterministic tests cover OAuth/API-key/session source constants, FD reads, well-known file fallback, caching, remote persistence, non-remote non-persistence, failed FD fallback, invalid FD rejection, and platform-specific descriptor paths
 
-OAuth credential storage, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+Prompt-cache diagnostics and remaining teleport integration wiring remain deferred to later phases.
+
+## Phase 29 OAuth credential storage foundation
+
+Phase 29 migrates the durable OAuth credential storage slice from `utils/auth.ts` and `utils/secureStorage/plainTextStorage.ts`:
+
+- `internal/oauthstorage` models Claude Code's plaintext secure-storage fallback at `.credentials.json`
+- token discovery follows the TypeScript order: bare mode disables OAuth, `CLAUDE_CODE_OAUTH_TOKEN` yields inference-only credentials, CCR OAuth file-descriptor credentials yield inference-only credentials, then stored `claudeAiOauth` data is read from disk
+- stored credentials preserve the TypeScript JSON shape with `accessToken`, `refreshToken`, `expiresAt` as Unix milliseconds, `scopes`, `subscriptionType`, and `rateLimitTier`
+- saving OAuth tokens skips non-Claude.ai scopes and inference-only tokens without treating that as a failure
+- durable token writes preserve existing subscription and rate-limit metadata when a refresh/profile lookup returns nil, matching the TypeScript guard against clobbering valid cached plan data
+- plaintext updates create parent directories, write credentials with `0600` permissions, preserve unknown top-level credential fields, and return the plaintext storage warning
+- deterministic tests cover environment and file-descriptor precedence, bare mode, stored token reads, durable saves, skipped saves, metadata preservation, unknown-field preservation, delete semantics, path construction, and file permissions
+
+Prompt-cache diagnostics and remaining teleport integration wiring remain deferred to later phases.
