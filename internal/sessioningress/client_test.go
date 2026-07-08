@@ -127,6 +127,57 @@ func TestSessionIngressAuthTokenFromFileDescriptor(t *testing.T) {
 	}
 }
 
+func TestSessionIngressAuthTokenPersistsFileDescriptorTokenForRemoteSubprocesses(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := tempDir + "/source-token"
+	persistPath := tempDir + "/remote/.session_ingress_token"
+	if err := os.WriteFile(sourcePath, []byte("fd_token"), 0o600); err != nil {
+		t.Fatalf("write source token: %v", err)
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open token: %v", err)
+	}
+	defer file.Close()
+	t.Setenv(EnvRemote, "true")
+	t.Setenv(EnvWebsocketAuthFileDescriptor, strconv.Itoa(int(file.Fd())))
+	t.Setenv(EnvSessionIngressTokenFile, persistPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "fd_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+	content, err := os.ReadFile(persistPath)
+	if err != nil {
+		t.Fatalf("read persisted token: %v", err)
+	}
+	if string(content) != "fd_token" {
+		t.Fatalf("persisted token = %q", string(content))
+	}
+}
+
+func TestSessionIngressAuthTokenDoesNotPersistOutsideRemote(t *testing.T) {
+	tempDir := t.TempDir()
+	sourcePath := tempDir + "/source-token"
+	persistPath := tempDir + "/remote/.session_ingress_token"
+	if err := os.WriteFile(sourcePath, []byte("fd_token"), 0o600); err != nil {
+		t.Fatalf("write source token: %v", err)
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open token: %v", err)
+	}
+	defer file.Close()
+	t.Setenv(EnvWebsocketAuthFileDescriptor, strconv.Itoa(int(file.Fd())))
+	t.Setenv(EnvSessionIngressTokenFile, persistPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "fd_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+	if _, err := os.Stat(persistPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("persisted token stat error = %v", err)
+	}
+}
+
 func TestSessionIngressAuthTokenFallsBackToFileWhenFileDescriptorFails(t *testing.T) {
 	tokenPath := t.TempDir() + "/token"
 	if err := os.WriteFile(tokenPath, []byte("fallback_token"), 0o600); err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ const (
 	EnvSessionIngressTokenFile = "CLAUDE_SESSION_INGRESS_TOKEN_FILE"
 	// EnvOrganizationUUID supplies the organization UUID for session-key auth and OAuth calls.
 	EnvOrganizationUUID = "CLAUDE_CODE_ORGANIZATION_UUID"
+	// EnvRemote gates token persistence for subprocesses inside CCR remote environments.
+	EnvRemote = "CLAUDE_CODE_REMOTE"
 	// DefaultSessionIngressTokenPath is the CCR well-known token file fallback path.
 	DefaultSessionIngressTokenPath = "/home/claude/.claude/remote/.session_ingress_token"
 )
@@ -65,6 +68,7 @@ func SessionIngressAuthTokenFromEnv() string {
 			return ""
 		}
 		if token := readTokenFile(fdPath(fd)); token != "" {
+			maybePersistTokenForSubprocesses(token)
 			return token
 		}
 	}
@@ -91,6 +95,26 @@ func readTokenFile(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(content))
+}
+
+func maybePersistTokenForSubprocesses(token string) {
+	if !isEnvTruthy(os.Getenv(EnvRemote)) {
+		return
+	}
+	path := sessionIngressTokenFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(token), 0o600)
+}
+
+func isEnvTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // TranscriptSource identifies which read path returned transcript entries.

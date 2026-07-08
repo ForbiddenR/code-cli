@@ -247,3 +247,15 @@ Phase 19 extends session ingress auth discovery to match the remaining token-sou
 - deterministic tests cover environment precedence, custom token files, descriptor reads, descriptor-read fallback, and invalid descriptor handling
 
 Token persistence for subprocesses, OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.
+
+## Phase 20 session ingress token persistence
+
+Phase 20 completes the subprocess token handoff slice from `authFileDescriptor.ts` and `sessionIngressAuth.ts`:
+
+- file-descriptor token reads now persist the discovered token for subprocess access when `CLAUDE_CODE_REMOTE` is truthy
+- persisted token files are written with `0600` permissions and parent directories are created with `0700`
+- persistence uses the configured session ingress token-file path, defaulting to `/home/claude/.claude/remote/.session_ingress_token`
+- non-remote runs keep descriptor-read tokens in memory only and do not write a fallback file
+- deterministic tests cover remote persistence, no persistence outside remote mode, and the existing token discovery order
+
+OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.
