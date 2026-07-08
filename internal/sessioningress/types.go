@@ -1,8 +1,12 @@
 package sessioningress
 
 import (
+	"fmt"
 	"net/http"
 	"os"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,8 +21,14 @@ const (
 
 	// EnvSessionAccessToken is the primary session ingress token environment variable.
 	EnvSessionAccessToken = "CLAUDE_CODE_SESSION_ACCESS_TOKEN"
+	// EnvWebsocketAuthFileDescriptor is the legacy CCR file descriptor token variable.
+	EnvWebsocketAuthFileDescriptor = "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR"
+	// EnvSessionIngressTokenFile overrides the well-known session ingress token file path.
+	EnvSessionIngressTokenFile = "CLAUDE_SESSION_INGRESS_TOKEN_FILE"
 	// EnvOrganizationUUID supplies the organization UUID for session-key auth and OAuth calls.
 	EnvOrganizationUUID = "CLAUDE_CODE_ORGANIZATION_UUID"
+	// DefaultSessionIngressTokenPath is the CCR well-known token file fallback path.
+	DefaultSessionIngressTokenPath = "/home/claude/.claude/remote/.session_ingress_token"
 )
 
 // Config contains process-level settings for session ingress calls.
@@ -36,12 +46,51 @@ type Config struct {
 	MaxTeleportPages int
 }
 
-// ConfigFromEnv returns session ingress auth configuration from the primary runtime environment variables.
+// ConfigFromEnv returns session ingress auth configuration from runtime environment token sources.
 func ConfigFromEnv() Config {
 	return Config{
-		AuthToken: os.Getenv(EnvSessionAccessToken),
+		AuthToken: SessionIngressAuthTokenFromEnv(),
 		OrgUUID:   os.Getenv(EnvOrganizationUUID),
 	}
+}
+
+// SessionIngressAuthTokenFromEnv returns the session ingress token using the TypeScript discovery order.
+func SessionIngressAuthTokenFromEnv() string {
+	if token := os.Getenv(EnvSessionAccessToken); token != "" {
+		return token
+	}
+	if fdEnv := os.Getenv(EnvWebsocketAuthFileDescriptor); fdEnv != "" {
+		fd, err := strconv.Atoi(fdEnv)
+		if err != nil {
+			return ""
+		}
+		if token := readTokenFile(fdPath(fd)); token != "" {
+			return token
+		}
+	}
+	return readTokenFile(sessionIngressTokenFilePath())
+}
+
+func sessionIngressTokenFilePath() string {
+	if path := os.Getenv(EnvSessionIngressTokenFile); path != "" {
+		return path
+	}
+	return DefaultSessionIngressTokenPath
+}
+
+func fdPath(fd int) string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+		return fmt.Sprintf("/dev/fd/%d", fd)
+	}
+	return fmt.Sprintf("/proc/self/fd/%d", fd)
+}
+
+func readTokenFile(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(content))
 }
 
 // TranscriptSource identifies which read path returned transcript entries.

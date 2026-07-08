@@ -233,3 +233,17 @@ Phase 18 adds the next session ingress auth/configuration parity slice from `ses
 - deterministic tests cover environment config loading, default client auth, and session-key cookie headers
 
 File-descriptor token discovery, well-known token-file fallback, token persistence for subprocesses, OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.
+
+## Phase 19 session ingress token discovery
+
+Phase 19 extends session ingress auth discovery to match the remaining token-source priority from `sessionIngressAuth.ts`:
+
+- `SessionIngressAuthTokenFromEnv` now checks `CLAUDE_CODE_SESSION_ACCESS_TOKEN` first
+- when no direct token is present, it can read the legacy `CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR` file descriptor path
+- failed descriptor reads fall back to a well-known token file
+- `CLAUDE_SESSION_INGRESS_TOKEN_FILE` can override the well-known token-file path
+- the default CCR fallback path is `/home/claude/.claude/remote/.session_ingress_token`
+- invalid descriptor values fail closed instead of reading a fallback token file
+- deterministic tests cover environment precedence, custom token files, descriptor reads, descriptor-read fallback, and invalid descriptor handling
+
+Token persistence for subprocesses, OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.

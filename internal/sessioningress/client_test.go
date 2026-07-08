@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +82,74 @@ func TestConfigFromEnv(t *testing.T) {
 	config := ConfigFromEnv()
 	if config.AuthToken != "env_token" || config.OrgUUID != "org_env" {
 		t.Fatalf("ConfigFromEnv() = %#v", config)
+	}
+}
+
+func TestSessionIngressAuthTokenFromCustomFile(t *testing.T) {
+	tokenPath := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenPath, []byte(" file_token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	t.Setenv(EnvSessionIngressTokenFile, tokenPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "file_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+}
+
+func TestSessionIngressAuthTokenPrefersEnvOverFile(t *testing.T) {
+	tokenPath := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenPath, []byte("file_token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	t.Setenv(EnvSessionAccessToken, "env_token")
+	t.Setenv(EnvSessionIngressTokenFile, tokenPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "env_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+}
+
+func TestSessionIngressAuthTokenFromFileDescriptor(t *testing.T) {
+	tokenPath := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenPath, []byte("fd_token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	file, err := os.Open(tokenPath)
+	if err != nil {
+		t.Fatalf("open token: %v", err)
+	}
+	defer file.Close()
+	t.Setenv(EnvWebsocketAuthFileDescriptor, strconv.Itoa(int(file.Fd())))
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "fd_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+}
+
+func TestSessionIngressAuthTokenFallsBackToFileWhenFileDescriptorFails(t *testing.T) {
+	tokenPath := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenPath, []byte("fallback_token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	t.Setenv(EnvWebsocketAuthFileDescriptor, "999999")
+	t.Setenv(EnvSessionIngressTokenFile, tokenPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "fallback_token" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
+	}
+}
+
+func TestSessionIngressAuthTokenRejectsInvalidFileDescriptor(t *testing.T) {
+	tokenPath := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenPath, []byte("fallback_token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	t.Setenv(EnvWebsocketAuthFileDescriptor, "not-a-fd")
+	t.Setenv(EnvSessionIngressTokenFile, tokenPath)
+
+	if got := SessionIngressAuthTokenFromEnv(); got != "" {
+		t.Fatalf("SessionIngressAuthTokenFromEnv() = %q", got)
 	}
 }
 
