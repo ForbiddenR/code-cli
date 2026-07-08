@@ -153,3 +153,7 @@ type remoteMessage struct {
 	Role    string               `json:"role"`
 	Content RemoteMessageContent `json:"content"`
 }
+
+type updateSessionTitleRequest struct {
+	Title string `json:"title"`
+}

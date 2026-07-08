@@ -421,3 +421,90 @@ func TestSendEventToRemoteSessionValidatesInput(t *testing.T) {
 		t.Fatalf("nil content result = (%v, %v)", ok, err)
 	}
 }
+
+func TestUpdateSessionTitle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q", r.Method)
+		}
+		if r.URL.Path != "/v1/sessions/sess_1" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access_token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != AnthropicVersion {
+			t.Fatalf("anthropic-version = %q", got)
+		}
+		if got := r.Header.Get("anthropic-beta"); got != CCRBYOCBeta {
+			t.Fatalf("anthropic-beta = %q", got)
+		}
+		if got := r.Header.Get("x-organization-uuid"); got != "org_uuid" {
+			t.Fatalf("x-organization-uuid = %q", got)
+		}
+
+		var request updateSessionTitleRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Title != "New title" {
+			t.Fatalf("title = %q", request.Title)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{BaseURL: server.URL, AccessToken: "access_token", OrgUUID: "org_uuid"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ok, err := client.UpdateSessionTitle(context.Background(), "sess_1", "New title")
+	if err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
+	if !ok {
+		t.Fatalf("UpdateSessionTitle returned false")
+	}
+}
+
+func TestUpdateSessionTitleReturnsFalseOnAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"message":"cannot update title"}}`)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ok, err := client.UpdateSessionTitle(context.Background(), "sess_1", "New title")
+	if ok {
+		t.Fatalf("UpdateSessionTitle returned true")
+	}
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) || apiErr.Message != "cannot update title" || apiErr.Kind != core.APIErrorPermission {
+		t.Fatalf("err = %#v", err)
+	}
+}
+
+func TestUpdateSessionTitleValidatesSessionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("server should not be called")
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if ok, err := client.UpdateSessionTitle(context.Background(), " ", "New title"); ok || err == nil {
+		t.Fatalf("empty session result = (%v, %v)", ok, err)
+	}
+}

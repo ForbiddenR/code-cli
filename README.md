@@ -285,3 +285,15 @@ Phase 23 adds the remote-session user event send path from `utils/teleport/api.t
 - deterministic `httptest` coverage verifies request headers, body shape, caller-provided UUIDs, generated UUIDs, API-error handling, and local input validation
 
 Title updates, branch extraction helpers, OAuth config parity, OAuth token/profile client integration, and prompt-cache diagnostics remain deferred to later phases.
+
+## Phase 24 Sessions API title update
+
+Phase 24 adds the remote-session title update path from `utils/teleport/api.ts`:
+
+- `UpdateSessionTitle` patches existing sessions via `PATCH /v1/sessions/{sessionID}`
+- request bodies use the TypeScript shape `{ "title": "..." }`
+- title updates reuse the CCR BYOC OAuth headers from Phase 22 and the standard Sessions API timeout
+- successful `200` responses return `true`; API failures return `false` with a normalized `core.APIError`
+- deterministic `httptest` coverage verifies request method/path, headers, JSON body shape, API-error handling, and local session-ID validation
+
+Branch extraction helpers, OAuth config parity, OAuth token/profile client integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.

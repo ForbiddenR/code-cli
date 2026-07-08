@@ -163,6 +163,28 @@ func (c *Client) SendEventToRemoteSession(ctx context.Context, sessionID string,
 	return false, responseError(response)
 }
 
+// UpdateSessionTitle updates the title of an existing remote session.
+func (c *Client) UpdateSessionTitle(ctx context.Context, sessionID string, title string) (bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return false, fmt.Errorf("session id is required")
+	}
+	body, err := json.Marshal(updateSessionTitleRequest{Title: title})
+	if err != nil {
+		return false, fmt.Errorf("marshal session title update: %w", err)
+	}
+	response, err := c.doWithBodyTimeout(ctx, c.timeout, http.MethodPatch, "/v1/sessions/"+url.PathEscape(sessionID), nil, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return true, nil
+	}
+	return false, responseError(response)
+}
+
 // OAuthHeaders returns the shared OAuth headers used by teleport API requests.
 func OAuthHeaders(accessToken string) http.Header {
 	headers := http.Header{}
