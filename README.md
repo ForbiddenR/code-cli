@@ -220,3 +220,16 @@ Phase 17 adds the higher-level transcript read coordination used by teleport flo
 - deterministic tests cover Teleport Events success, fallback on 404/server failure, auth-error non-fallback, and append-lock cleanup
 
 JWT discovery, OAuth token refresh, diagnostics/debug logging, command-layer teleport progress integration, and integration with the higher-level transcript runtime remain deferred to later phases.
+
+## Phase 18 session ingress auth header parity
+
+Phase 18 adds the next session ingress auth/configuration parity slice from `sessionIngressAuth.ts`:
+
+- `ConfigFromEnv` reads `CLAUDE_CODE_SESSION_ACCESS_TOKEN` and `CLAUDE_CODE_ORGANIZATION_UUID` for runtime session ingress configuration
+- `NewClient` uses those environment values as auth defaults when explicit config values are absent
+- session keys with the `sk-ant-sid` prefix now use `Cookie: sessionKey=...` instead of bearer auth
+- session-key auth includes `X-Organization-Uuid` when an organization UUID is configured
+- bearer-token behavior remains available for JWT/OAuth session ingress calls
+- deterministic tests cover environment config loading, default client auth, and session-key cookie headers
+
+File-descriptor token discovery, well-known token-file fallback, token persistence for subprocesses, OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.

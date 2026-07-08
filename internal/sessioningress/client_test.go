@@ -73,6 +73,47 @@ func TestFetchSessionLogsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv(t *testing.T) {
+	t.Setenv(EnvSessionAccessToken, "env_token")
+	t.Setenv(EnvOrganizationUUID, "org_env")
+
+	config := ConfigFromEnv()
+	if config.AuthToken != "env_token" || config.OrgUUID != "org_env" {
+		t.Fatalf("ConfigFromEnv() = %#v", config)
+	}
+}
+
+func TestNewClientUsesEnvAuthDefaults(t *testing.T) {
+	t.Setenv(EnvSessionAccessToken, "env_token")
+	t.Setenv(EnvOrganizationUUID, "org_env")
+
+	client, err := NewClient(Config{BaseURL: "https://example.test"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if client.authToken != "env_token" || client.orgUUID != "org_env" {
+		t.Fatalf("auth = %q, org = %q", client.authToken, client.orgUUID)
+	}
+}
+
+func TestAuthHeadersUseSessionKeyCookie(t *testing.T) {
+	client, err := NewClient(Config{BaseURL: "https://example.test", AuthToken: "sk-ant-sid-token", OrgUUID: "org_123"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	headers := client.authHeaders()
+	if headers.Get("Cookie") != "sessionKey=sk-ant-sid-token" {
+		t.Fatalf("cookie = %q", headers.Get("Cookie"))
+	}
+	if headers.Get("X-Organization-Uuid") != "org_123" {
+		t.Fatalf("org = %q", headers.Get("X-Organization-Uuid"))
+	}
+	if headers.Get("Authorization") != "" {
+		t.Fatalf("authorization = %q", headers.Get("Authorization"))
+	}
+}
+
 func TestAppendSessionLog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut || r.URL.Path != "/v1/session_ingress/session/session_123" {

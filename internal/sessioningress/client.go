@@ -78,11 +78,20 @@ func NewClient(config Config) (*Client, error) {
 		maxTeleportPages = DefaultMaxPages
 	}
 
+	authToken := config.AuthToken
+	if authToken == "" {
+		authToken = ConfigFromEnv().AuthToken
+	}
+	orgUUID := config.OrgUUID
+	if orgUUID == "" {
+		orgUUID = ConfigFromEnv().OrgUUID
+	}
+
 	return &Client{
 		baseURL:           parsed,
 		httpClient:        httpClient,
-		authToken:         config.AuthToken,
-		orgUUID:           config.OrgUUID,
+		authToken:         authToken,
+		orgUUID:           orgUUID,
 		timeout:           timeout,
 		maxRetries:        maxRetries,
 		baseDelay:         baseDelay,
@@ -327,6 +336,13 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 
 func (c *Client) authHeaders() http.Header {
 	headers := http.Header{}
+	if strings.HasPrefix(c.authToken, "sk-ant-sid") {
+		headers.Set("Cookie", "sessionKey="+c.authToken)
+		if c.orgUUID != "" {
+			headers.Set("X-Organization-Uuid", c.orgUUID)
+		}
+		return headers
+	}
 	if c.authToken != "" {
 		headers.Set("Authorization", "Bearer "+c.authToken)
 	}

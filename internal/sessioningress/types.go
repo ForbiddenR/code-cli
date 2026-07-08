@@ -2,6 +2,7 @@ package sessioningress
 
 import (
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -13,6 +14,11 @@ const (
 	DefaultBaseDelay     = 500 * time.Millisecond
 	DefaultTeleportLimit = 1000
 	DefaultMaxPages      = 100
+
+	// EnvSessionAccessToken is the primary session ingress token environment variable.
+	EnvSessionAccessToken = "CLAUDE_CODE_SESSION_ACCESS_TOKEN"
+	// EnvOrganizationUUID supplies the organization UUID for session-key auth and OAuth calls.
+	EnvOrganizationUUID = "CLAUDE_CODE_ORGANIZATION_UUID"
 )
 
 // Config contains process-level settings for session ingress calls.
@@ -28,6 +34,14 @@ type Config struct {
 	AfterLastCompact bool
 	TeleportLimit    int
 	MaxTeleportPages int
+}
+
+// ConfigFromEnv returns session ingress auth configuration from the primary runtime environment variables.
+func ConfigFromEnv() Config {
+	return Config{
+		AuthToken: os.Getenv(EnvSessionAccessToken),
+		OrgUUID:   os.Getenv(EnvOrganizationUUID),
+	}
 }
 
 // TranscriptSource identifies which read path returned transcript entries.
