@@ -309,3 +309,17 @@ Phase 25 completes the remaining pure helper slice from `utils/teleport/api.ts` 
 - deterministic tests cover code-session transformation, GitHub source parsing, first-branch extraction, and missing-branch cases
 
 OAuth config parity, OAuth token/profile client integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+
+## Phase 26 OAuth config parity
+
+Phase 26 adds the OAuth URL/configuration resolver from `constants/oauth.ts` as a reusable Go package:
+
+- `internal/oauthconfig` models production, staging, local, and allowlisted custom OAuth endpoint configuration
+- environment selection matches the TypeScript ordering: production by default, staging/local only for `USER_TYPE=ant`, local taking precedence over staging, and `CLAUDE_CODE_CUSTOM_OAUTH_URL` overriding URL fields when allowlisted
+- local OAuth base overrides trim trailing slashes for `CLAUDE_LOCAL_OAUTH_API_BASE`, `CLAUDE_LOCAL_OAUTH_APPS_BASE`, and `CLAUDE_LOCAL_OAUTH_CONSOLE_BASE`
+- `CLAUDE_CODE_OAUTH_CLIENT_ID` overrides the selected client ID
+- file suffix helpers preserve production, staging, local, and custom OAuth credential suffix behavior
+- OAuth scope constants and MCP client metadata/proxy configuration are represented for later auth/client phases
+- deterministic tests cover production, staging, local, custom allowlist rejection, client ID overrides, file suffixes, scope ordering, and local URL trimming
+
+OAuth token/profile client integration, wiring this resolver into all API clients, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
