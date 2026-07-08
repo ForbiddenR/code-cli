@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -171,13 +172,30 @@ func (c *Client) FetchSessionLogs(ctx context.Context, sessionID string) ([]Entr
 	return nil, responseError(response)
 }
 
+// FetchSessionTranscript fetches transcript entries with Teleport Events first and legacy session ingress fallback.
+func (c *Client) FetchSessionTranscript(ctx context.Context, sessionID string) ([]Entry, TranscriptSource, error) {
+	entries, err := c.FetchTeleportEvents(ctx, sessionID)
+	if err == nil && entries != nil {
+		return entries, TranscriptSourceTeleportEvents, nil
+	}
+	if isAuthError(err) {
+		return nil, TranscriptSourceTeleportEvents, err
+	}
+
+	entries, err = c.FetchSessionLogs(ctx, sessionID)
+	if err != nil {
+		return nil, TranscriptSourceSessionIngress, err
+	}
+	return entries, TranscriptSourceSessionIngress, nil
+}
+
 // FetchTeleportEvents fetches transcript worker events from the CCR v2 sessions API.
 func (c *Client) FetchTeleportEvents(ctx context.Context, sessionID string) ([]Entry, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, fmt.Errorf("session id is required")
 	}
 
-	var all []Entry
+	all := []Entry{}
 	var cursor string
 	for page := 0; page < c.maxTeleportPages; page++ {
 		query := url.Values{}
@@ -195,6 +213,9 @@ func (c *Client) FetchTeleportEvents(ctx context.Context, sessionID string) ([]E
 			return nil, err
 		}
 		if stop {
+			if page == 0 {
+				return nil, nil
+			}
 			return all, nil
 		}
 		all = append(all, entries...)
@@ -211,6 +232,7 @@ func (c *Client) ClearSession(sessionID string) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	delete(c.lastUUIDBySession, sessionID)
+	delete(c.appendLocks, sessionID)
 }
 
 // ClearAllSessions clears all cached optimistic ordering state.
@@ -218,6 +240,7 @@ func (c *Client) ClearAllSessions() {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	clear(c.lastUUIDBySession)
+	clear(c.appendLocks)
 }
 
 func (c *Client) sessionAppendLock(sessionID string) *sync.Mutex {
@@ -439,6 +462,11 @@ func retryableStatus(status int) bool {
 	default:
 		return false
 	}
+}
+
+func isAuthError(err error) bool {
+	var apiErr *core.APIError
+	return errors.As(err, &apiErr) && apiErr.Kind == core.APIErrorAuth
 }
 
 func classifyTransportError(err error) *core.APIError {

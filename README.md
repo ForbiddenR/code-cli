@@ -207,3 +207,16 @@ Phase 16 hardens the session ingress append path to match the per-session sequen
 - deterministic `httptest` coverage verifies same-session serialization, cross-session concurrency, and continued `Last-Uuid` chaining
 
 JWT discovery, OAuth token refresh, diagnostics/debug logging, fallback coordination between Teleport Events and legacy session ingress, and integration with the higher-level transcript runtime remain deferred to later phases.
+
+## Phase 17 session transcript fallback coordination
+
+Phase 17 adds the higher-level transcript read coordination used by teleport flows in `sessionIngress.ts`:
+
+- `FetchSessionTranscript` tries CCR v2 Teleport Events before the legacy session ingress endpoint
+- first-page Teleport Events 404 and non-auth failures fall back to `GET /v1/session_ingress/session/{sessionID}`
+- Teleport Events auth failures remain non-fallback errors so expired credentials are surfaced directly
+- callers receive a typed `TranscriptSource` value identifying whether transcript entries came from Teleport Events or legacy session ingress
+- clearing cached session state now also clears per-session append locks, matching the TypeScript cache cleanup path
+- deterministic tests cover Teleport Events success, fallback on 404/server failure, auth-error non-fallback, and append-lock cleanup
+
+JWT discovery, OAuth token refresh, diagnostics/debug logging, command-layer teleport progress integration, and integration with the higher-level transcript runtime remain deferred to later phases.

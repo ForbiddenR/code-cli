@@ -283,6 +283,99 @@ func TestAppendSessionLogAllowsDifferentSessionsConcurrently(t *testing.T) {
 	close(releaseFirst)
 }
 
+func TestFetchSessionTranscriptUsesTeleportEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/code/sessions/session_123/teleport-events" {
+			t.Fatalf("unexpected fallback request = %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"data":[{"payload":{"uuid":"uuid_1"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, source, err := client.FetchSessionTranscript(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchSessionTranscript() error = %v", err)
+	}
+	if source != TranscriptSourceTeleportEvents {
+		t.Fatalf("source = %q", source)
+	}
+	if len(got) != 1 || !strings.Contains(string(got[0]), "uuid_1") {
+		t.Fatalf("entries = %#v", got)
+	}
+}
+
+func TestFetchSessionTranscriptFallsBackToSessionIngressOnTeleportNotFound(t *testing.T) {
+	var sawFallback bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/code/sessions/session_123/teleport-events":
+			http.NotFound(w, nil)
+		case "/v1/session_ingress/session/session_123":
+			sawFallback = true
+			_, _ = w.Write([]byte(`{"loglines":[{"uuid":"uuid_legacy"}]}`))
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, source, err := client.FetchSessionTranscript(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchSessionTranscript() error = %v", err)
+	}
+	if source != TranscriptSourceSessionIngress || !sawFallback {
+		t.Fatalf("source = %q, saw fallback = %v", source, sawFallback)
+	}
+	if len(got) != 1 || !strings.Contains(string(got[0]), "uuid_legacy") {
+		t.Fatalf("entries = %#v", got)
+	}
+}
+
+func TestFetchSessionTranscriptFallsBackToSessionIngressOnTeleportServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/code/sessions/session_123/teleport-events":
+			http.Error(w, "temporary", http.StatusInternalServerError)
+		case "/v1/session_ingress/session/session_123":
+			_, _ = w.Write([]byte(`{"loglines":[{"uuid":"uuid_legacy"}]}`))
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	got, source, err := client.FetchSessionTranscript(context.Background(), "session_123")
+	if err != nil {
+		t.Fatalf("FetchSessionTranscript() error = %v", err)
+	}
+	if source != TranscriptSourceSessionIngress || len(got) != 1 {
+		t.Fatalf("source = %q, entries = %#v", source, got)
+	}
+}
+
+func TestFetchSessionTranscriptDoesNotFallBackOnTeleportAuthError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/code/sessions/session_123/teleport-events" {
+			t.Fatalf("unexpected fallback request = %s %s", r.Method, r.URL.String())
+		}
+		http.Error(w, "bad token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	_, source, err := client.FetchSessionTranscript(context.Background(), "session_123")
+	var apiErr *core.APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != core.APIErrorAuth {
+		t.Fatalf("error = %#v", err)
+	}
+	if source != TranscriptSourceTeleportEvents {
+		t.Fatalf("source = %q", source)
+	}
+}
+
 func TestFetchTeleportEvents(t *testing.T) {
 	var queries []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -398,13 +491,21 @@ func TestClearSessions(t *testing.T) {
 	}
 	client.lastUUIDBySession["one"] = "uuid_1"
 	client.lastUUIDBySession["two"] = "uuid_2"
+	client.appendLocks["one"] = &sync.Mutex{}
+	client.appendLocks["two"] = &sync.Mutex{}
 	client.ClearSession("one")
 	if _, ok := client.lastUUIDBySession["one"]; ok {
 		t.Fatalf("session one was not cleared")
 	}
+	if _, ok := client.appendLocks["one"]; ok {
+		t.Fatalf("session one append lock was not cleared")
+	}
 	client.ClearAllSessions()
 	if len(client.lastUUIDBySession) != 0 {
 		t.Fatalf("last uuid map = %#v", client.lastUUIDBySession)
+	}
+	if len(client.appendLocks) != 0 {
+		t.Fatalf("append locks = %#v", client.appendLocks)
 	}
 }
 

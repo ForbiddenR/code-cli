@@ -30,6 +30,16 @@ type Config struct {
 	MaxTeleportPages int
 }
 
+// TranscriptSource identifies which read path returned transcript entries.
+type TranscriptSource string
+
+const (
+	// TranscriptSourceTeleportEvents indicates entries came from the CCR v2 Teleport Events API.
+	TranscriptSourceTeleportEvents TranscriptSource = "teleport_events"
+	// TranscriptSourceSessionIngress indicates entries came from the legacy session ingress API.
+	TranscriptSourceSessionIngress TranscriptSource = "session_ingress"
+)
+
 // Entry is one raw transcript entry returned by session ingress.
 type Entry []byte
 
