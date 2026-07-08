@@ -259,3 +259,16 @@ Phase 20 completes the subprocess token handoff slice from `authFileDescriptor.t
 - deterministic tests cover remote persistence, no persistence outside remote mode, and the existing token discovery order
 
 OAuth token refresh, diagnostics/debug logging, and command-layer teleport progress integration remain deferred to later phases.
+
+## Phase 22 Teleport Sessions API foundation
+
+Phase 22 starts migrating `utils/teleport/api.ts` by adding a focused Sessions API package:
+
+- `internal/sessionsapi` models the CCR BYOC Sessions API resource and list response shapes from `/v1/sessions`
+- `ListCodeSessions` calls `GET /v1/sessions` and transforms raw session resources into the legacy code-session shape used by teleport UI flows
+- `FetchSession` calls `GET /v1/sessions/{sessionID}` and returns typed session resources with deterministic 404, auth, and API-error handling
+- OAuth request headers now include bearer auth, `Content-Type: application/json`, `anthropic-version: 2023-06-01`, `anthropic-beta: ccr-byoc-2025-07-29`, and `x-organization-uuid` when configured
+- list-session reads retry transient network and 5xx failures with the TypeScript backoff sequence of 2s, 4s, 8s, and 16s, while client errors remain non-retryable
+- deterministic `httptest` coverage verifies headers, transformation behavior, retry behavior, non-retryable 4xx handling, single-session fetch errors, and GitHub repository parsing
+
+Session event sending, title updates, richer session resource helpers, OAuth config parity, OAuth token/profile client integration, and prompt-cache diagnostics remain deferred to later phases.
