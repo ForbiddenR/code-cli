@@ -170,3 +170,16 @@ Phase 13 tightens Files API configuration parity with `filesApi.ts`:
 - tests cover environment precedence, default timeout values, and explicit upload timeout configuration
 
 Analytics events, debug logging, command-layer cancellation UX, BYOC/1P mode decisions, and integration with higher-level session startup/runtime flows remain deferred to future phases.
+
+## Phase 14 session ingress foundation
+
+Phase 14 starts migrating the transcript persistence paths from `sessionIngress.ts` into a new `internal/sessioningress` package:
+
+- session log append via `PUT /v1/session_ingress/session/{sessionID}` with bearer auth and JSON content type
+- optimistic append ordering with cached `Last-Uuid` state per session
+- 409 conflict recovery when the server returns `x-last-uuid`, including the “already stored” success case
+- session log fetch via `GET /v1/session_ingress/session/{sessionID}`, including optional `after_last_compact=true`
+- typed raw transcript entry handling plus helpers to clear per-session or all cached append state
+- deterministic `httptest` coverage for fetch, append, 401 handling, 404-as-empty, conflict recovery, and cache clearing
+
+JWT discovery, OAuth token refresh, per-session sequential execution wrappers, diagnostics/debug logging, Teleport Events pagination, and integration with the higher-level transcript runtime remain deferred to later phases.
