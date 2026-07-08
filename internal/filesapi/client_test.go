@@ -140,6 +140,8 @@ func TestListFilesCreatedAfterRejectsEmptyTimestamp(t *testing.T) {
 }
 
 func TestNewClientDefaultsAndValidation(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("CLAUDE_CODE_API_BASE_URL", "")
 	client, err := NewClient(Config{})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -147,8 +149,34 @@ func TestNewClientDefaultsAndValidation(t *testing.T) {
 	if got := client.endpoint("/v1/files", nil); got != DefaultBaseURL+"/v1/files" {
 		t.Fatalf("endpoint = %q", got)
 	}
+	if client.timeout != DefaultTimeout || client.uploadTimeout != DefaultUploadTimeout {
+		t.Fatalf("timeouts = %s, %s", client.timeout, client.uploadTimeout)
+	}
 	if _, err := NewClient(Config{BaseURL: "://bad"}); err == nil {
 		t.Fatalf("expected invalid base URL error")
+	}
+}
+
+func TestDefaultBaseURLFromEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "https://primary.example.test")
+	t.Setenv("CLAUDE_CODE_API_BASE_URL", "https://secondary.example.test")
+	if got := DefaultBaseURLFromEnv(); got != "https://primary.example.test" {
+		t.Fatalf("DefaultBaseURLFromEnv() = %q", got)
+	}
+
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	if got := DefaultBaseURLFromEnv(); got != "https://secondary.example.test" {
+		t.Fatalf("DefaultBaseURLFromEnv() = %q", got)
+	}
+}
+
+func TestNewClientConfiguresUploadTimeout(t *testing.T) {
+	client, err := NewClient(Config{BaseURL: "https://example.test", Timeout: time.Second, UploadTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if client.timeout != time.Second || client.uploadTimeout != 2*time.Second {
+		t.Fatalf("timeouts = %s, %s", client.timeout, client.uploadTimeout)
 	}
 }
 

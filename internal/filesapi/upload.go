@@ -40,7 +40,7 @@ func (c *Client) UploadFile(ctx context.Context, filePath string, relativePath s
 			return false, err
 		}
 		headers := http.Header{"Content-Type": []string{contentType}, "Content-Length": []string{fmt.Sprint(body.Len())}}
-		response, err := c.doWithHeaders(ctx, http.MethodPost, "/v1/files", nil, body, headers)
+		response, err := c.doWithHeadersTimeout(ctx, c.uploadTimeout, http.MethodPost, "/v1/files", nil, body, headers)
 		if err != nil {
 			return true, err
 		}

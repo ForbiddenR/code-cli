@@ -159,3 +159,14 @@ Phase 12 adds the next Files API orchestration layer around the read/list and up
 - deterministic filesystem and HTTP tests for success, invalid paths, ordering, and multipart batch uploads
 
 Analytics events, debug logging, command-layer cancellation UX, environment-driven base URL selection, BYOC/1P mode decisions, and integration with higher-level session startup/runtime flows remain deferred to future phases.
+
+## Phase 13 Files API runtime configuration parity
+
+Phase 13 tightens Files API configuration parity with `filesApi.ts`:
+
+- default base URL resolution now follows `ANTHROPIC_BASE_URL`, then `CLAUDE_CODE_API_BASE_URL`, then `https://api.anthropic.com`
+- upload calls use a separate 120-second default timeout, matching the TypeScript upload path rather than the 60-second download/list timeout
+- callers can override the upload timeout independently through `Config.UploadTimeout`
+- tests cover environment precedence, default timeout values, and explicit upload timeout configuration
+
+Analytics events, debug logging, command-layer cancellation UX, BYOC/1P mode decisions, and integration with higher-level session startup/runtime flows remain deferred to future phases.

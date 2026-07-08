@@ -13,22 +13,24 @@ const (
 	// AnthropicVersion is the API version header used by the TypeScript Files API client.
 	AnthropicVersion = "2023-06-01"
 
-	DefaultMaxRetries  = 3
-	DefaultBaseDelay   = 500 * time.Millisecond
-	DefaultTimeout     = 60 * time.Second
-	DefaultConcurrency = 5
-	MaxFileSizeBytes   = 500 * 1024 * 1024
+	DefaultMaxRetries    = 3
+	DefaultBaseDelay     = 500 * time.Millisecond
+	DefaultTimeout       = 60 * time.Second
+	DefaultUploadTimeout = 120 * time.Second
+	DefaultConcurrency   = 5
+	MaxFileSizeBytes     = 500 * 1024 * 1024
 )
 
 // Config contains process-level settings for Files API calls.
 type Config struct {
-	OAuthToken string
-	BaseURL    string
-	HTTPClient *http.Client
-	MaxRetries int
-	BaseDelay  time.Duration
-	Timeout    time.Duration
-	Sleep      func(time.Duration)
+	OAuthToken    string
+	BaseURL       string
+	HTTPClient    *http.Client
+	MaxRetries    int
+	BaseDelay     time.Duration
+	Timeout       time.Duration
+	UploadTimeout time.Duration
+	Sleep         func(time.Duration)
 }
 
 // File is one file attachment spec parsed from CLI arguments.

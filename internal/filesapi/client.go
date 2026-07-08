@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -15,20 +16,21 @@ import (
 
 // Client calls the Anthropic Files API.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	oauthToken string
-	maxRetries int
-	baseDelay  time.Duration
-	timeout    time.Duration
-	sleep      func(time.Duration)
+	baseURL       *url.URL
+	httpClient    *http.Client
+	oauthToken    string
+	maxRetries    int
+	baseDelay     time.Duration
+	timeout       time.Duration
+	uploadTimeout time.Duration
+	sleep         func(time.Duration)
 }
 
 // NewClient creates a Files API client.
 func NewClient(config Config) (*Client, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
-		baseURL = DefaultBaseURL
+		baseURL = DefaultBaseURLFromEnv()
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -54,20 +56,37 @@ func NewClient(config Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	uploadTimeout := config.UploadTimeout
+	if uploadTimeout <= 0 {
+		uploadTimeout = DefaultUploadTimeout
+	}
 	sleep := config.Sleep
 	if sleep == nil {
 		sleep = time.Sleep
 	}
 
 	return &Client{
-		baseURL:    parsed,
-		httpClient: httpClient,
-		oauthToken: config.OAuthToken,
-		maxRetries: maxRetries,
-		baseDelay:  baseDelay,
-		timeout:    timeout,
-		sleep:      sleep,
+		baseURL:       parsed,
+		httpClient:    httpClient,
+		oauthToken:    config.OAuthToken,
+		maxRetries:    maxRetries,
+		baseDelay:     baseDelay,
+		timeout:       timeout,
+		uploadTimeout: uploadTimeout,
+		sleep:         sleep,
 	}, nil
+}
+
+// DefaultBaseURLFromEnv returns the default Files API base URL using the same
+// environment precedence as the TypeScript client.
+func DefaultBaseURLFromEnv() string {
+	if value := os.Getenv("ANTHROPIC_BASE_URL"); value != "" {
+		return value
+	}
+	if value := os.Getenv("CLAUDE_CODE_API_BASE_URL"); value != "" {
+		return value
+	}
+	return DefaultBaseURL
 }
 
 // DownloadFile downloads one file's content.
@@ -153,9 +172,13 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 }
 
 func (c *Client) doWithHeaders(ctx context.Context, method string, path string, query url.Values, body io.Reader, headers http.Header) (*http.Response, error) {
-	if c.timeout > 0 {
+	return c.doWithHeadersTimeout(ctx, c.timeout, method, path, query, body, headers)
+}
+
+func (c *Client) doWithHeadersTimeout(ctx context.Context, timeout time.Duration, method string, path string, query url.Values, body io.Reader, headers http.Header) (*http.Response, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	request, err := http.NewRequestWithContext(ctx, method, c.endpoint(path, query), body)
