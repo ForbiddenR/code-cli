@@ -1,7 +1,9 @@
 package sessionsapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +19,14 @@ import (
 
 // Client calls the CCR BYOC Sessions API.
 type Client struct {
-	baseURL     *url.URL
-	httpClient  *http.Client
-	accessToken string
-	orgUUID     string
-	timeout     time.Duration
-	retryDelays []time.Duration
-	sleep       func(time.Duration)
+	baseURL          *url.URL
+	httpClient       *http.Client
+	accessToken      string
+	orgUUID          string
+	timeout          time.Duration
+	sendEventTimeout time.Duration
+	retryDelays      []time.Duration
+	sleep            func(time.Duration)
 }
 
 // NewClient creates a Sessions API client.
@@ -48,6 +51,10 @@ func NewClient(config Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	sendEventTimeout := config.SendEventTimeout
+	if sendEventTimeout <= 0 {
+		sendEventTimeout = DefaultSendEventTimeout
+	}
 	retryDelays := config.RetryDelays
 	if len(retryDelays) == 0 {
 		retryDelays = DefaultRetryDelays
@@ -58,13 +65,14 @@ func NewClient(config Config) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:     parsed,
-		httpClient:  httpClient,
-		accessToken: config.AccessToken,
-		orgUUID:     config.OrgUUID,
-		timeout:     timeout,
-		retryDelays: append([]time.Duration(nil), retryDelays...),
-		sleep:       sleep,
+		baseURL:          parsed,
+		httpClient:       httpClient,
+		accessToken:      config.AccessToken,
+		orgUUID:          config.OrgUUID,
+		timeout:          timeout,
+		sendEventTimeout: sendEventTimeout,
+		retryDelays:      append([]time.Duration(nil), retryDelays...),
+		sleep:            sleep,
 	}, nil
 }
 
@@ -110,6 +118,51 @@ func (c *Client) FetchSession(ctx context.Context, sessionID string) (SessionRes
 	return SessionResource{}, responseError(response)
 }
 
+// SendEventToRemoteSession sends one user message event to an existing remote session.
+func (c *Client) SendEventToRemoteSession(ctx context.Context, sessionID string, messageContent RemoteMessageContent, opts SendEventOptions) (bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return false, fmt.Errorf("session id is required")
+	}
+	if messageContent == nil {
+		return false, fmt.Errorf("message content is required")
+	}
+
+	eventUUID := opts.UUID
+	if strings.TrimSpace(eventUUID) == "" {
+		var err error
+		eventUUID, err = randomUUID()
+		if err != nil {
+			return false, err
+		}
+	}
+	requestBody := sendEventsRequest{Events: []remoteSessionEvent{{
+		UUID:            eventUUID,
+		SessionID:       sessionID,
+		Type:            "user",
+		ParentToolUseID: nil,
+		Message: remoteMessage{
+			Role:    "user",
+			Content: messageContent,
+		},
+	}}}
+
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return false, fmt.Errorf("marshal session event: %w", err)
+	}
+	response, err := c.doWithBodyTimeout(ctx, c.sendEventTimeout, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/events", nil, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusCreated {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return true, nil
+	}
+	return false, responseError(response)
+}
+
 // OAuthHeaders returns the shared OAuth headers used by teleport API requests.
 func OAuthHeaders(accessToken string) http.Header {
 	headers := http.Header{}
@@ -145,12 +198,16 @@ func (c *Client) getWithRetry(ctx context.Context, path string, query url.Values
 }
 
 func (c *Client) do(ctx context.Context, method string, path string, query url.Values) (*http.Response, error) {
-	if c.timeout > 0 {
+	return c.doWithBodyTimeout(ctx, c.timeout, method, path, query, nil)
+}
+
+func (c *Client) doWithBodyTimeout(ctx context.Context, timeout time.Duration, method string, path string, query url.Values, body io.Reader) (*http.Response, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	request, err := http.NewRequestWithContext(ctx, method, c.endpoint(path, query), nil)
+	request, err := http.NewRequestWithContext(ctx, method, c.endpoint(path, query), body)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -255,6 +312,16 @@ func splitGitHubPath(path string) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+
+func randomUUID() (string, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return "", fmt.Errorf("generate event uuid: %w", err)
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
 func responseError(response *http.Response) *core.APIError {

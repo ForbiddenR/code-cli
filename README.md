@@ -272,3 +272,16 @@ Phase 22 starts migrating `utils/teleport/api.ts` by adding a focused Sessions A
 - deterministic `httptest` coverage verifies headers, transformation behavior, retry behavior, non-retryable 4xx handling, single-session fetch errors, and GitHub repository parsing
 
 Session event sending, title updates, richer session resource helpers, OAuth config parity, OAuth token/profile client integration, and prompt-cache diagnostics remain deferred to later phases.
+
+## Phase 23 Sessions API event send
+
+Phase 23 adds the remote-session user event send path from `utils/teleport/api.ts`:
+
+- `SendEventToRemoteSession` posts user message events to `POST /v1/sessions/{sessionID}/events`
+- request bodies use the TypeScript event shape with `events`, `uuid`, `session_id`, `type: "user"`, `parent_tool_use_id: null`, and `message.role: "user"`
+- callers can provide an event UUID for local echo de-duplication, or let the Go client generate an RFC 4122 version 4 UUID
+- event sends use the CCR BYOC OAuth headers from Phase 22 and a separate 30-second timeout to match the cold-start margin in the TypeScript implementation
+- successful `200` and `201` responses return `true`; API failures return `false` with a normalized `core.APIError`
+- deterministic `httptest` coverage verifies request headers, body shape, caller-provided UUIDs, generated UUIDs, API-error handling, and local input validation
+
+Title updates, branch extraction helpers, OAuth config parity, OAuth token/profile client integration, and prompt-cache diagnostics remain deferred to later phases.

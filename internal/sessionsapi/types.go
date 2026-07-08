@@ -14,6 +14,8 @@ const (
 	CCRBYOCBeta = "ccr-byoc-2025-07-29"
 	// DefaultTimeout matches the single-session fetch timeout in teleport/api.ts.
 	DefaultTimeout = 15 * time.Second
+	// DefaultSendEventTimeout matches the remote event send timeout in teleport/api.ts.
+	DefaultSendEventTimeout = 30 * time.Second
 )
 
 // DefaultRetryDelays matches axiosGetWithRetry in teleport/api.ts.
@@ -21,13 +23,14 @@ var DefaultRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * t
 
 // Config contains process-level settings for Sessions API calls.
 type Config struct {
-	BaseURL     string
-	AccessToken string
-	OrgUUID     string
-	HTTPClient  *http.Client
-	Timeout     time.Duration
-	RetryDelays []time.Duration
-	Sleep       func(time.Duration)
+	BaseURL          string
+	AccessToken      string
+	OrgUUID          string
+	HTTPClient       *http.Client
+	Timeout          time.Duration
+	SendEventTimeout time.Duration
+	RetryDelays      []time.Duration
+	Sleep            func(time.Duration)
 }
 
 // SessionStatus is the raw Sessions API session_status value.
@@ -124,4 +127,29 @@ type Repo struct {
 // RepoOwner is the GitHub repository owner summary embedded in a CodeSession.
 type RepoOwner struct {
 	Login string `json:"login"`
+}
+
+// RemoteMessageContent is the message content accepted by the remote-session event endpoint.
+type RemoteMessageContent any
+
+// SendEventOptions contains optional event-send fields.
+type SendEventOptions struct {
+	UUID string
+}
+
+type sendEventsRequest struct {
+	Events []remoteSessionEvent `json:"events"`
+}
+
+type remoteSessionEvent struct {
+	UUID            string        `json:"uuid"`
+	SessionID       string        `json:"session_id"`
+	Type            string        `json:"type"`
+	ParentToolUseID *string       `json:"parent_tool_use_id"`
+	Message         remoteMessage `json:"message"`
+}
+
+type remoteMessage struct {
+	Role    string               `json:"role"`
+	Content RemoteMessageContent `json:"content"`
 }
