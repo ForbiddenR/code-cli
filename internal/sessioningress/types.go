@@ -1,14 +1,11 @@
 package sessioningress
 
 import (
-	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
 	"time"
+
+	"code-cli/internal/authfiledescriptor"
 )
 
 const (
@@ -23,15 +20,15 @@ const (
 	// EnvSessionAccessToken is the primary session ingress token environment variable.
 	EnvSessionAccessToken = "CLAUDE_CODE_SESSION_ACCESS_TOKEN"
 	// EnvWebsocketAuthFileDescriptor is the legacy CCR file descriptor token variable.
-	EnvWebsocketAuthFileDescriptor = "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR"
+	EnvWebsocketAuthFileDescriptor = authfiledescriptor.EnvWebsocketAuthFileDescriptor
 	// EnvSessionIngressTokenFile overrides the well-known session ingress token file path.
 	EnvSessionIngressTokenFile = "CLAUDE_SESSION_INGRESS_TOKEN_FILE"
 	// EnvOrganizationUUID supplies the organization UUID for session-key auth and OAuth calls.
 	EnvOrganizationUUID = "CLAUDE_CODE_ORGANIZATION_UUID"
 	// EnvRemote gates token persistence for subprocesses inside CCR remote environments.
-	EnvRemote = "CLAUDE_CODE_REMOTE"
+	EnvRemote = authfiledescriptor.EnvRemote
 	// DefaultSessionIngressTokenPath is the CCR well-known token file fallback path.
-	DefaultSessionIngressTokenPath = "/home/claude/.claude/remote/.session_ingress_token"
+	DefaultSessionIngressTokenPath = authfiledescriptor.DefaultSessionIngressTokenPath
 )
 
 // Config contains process-level settings for session ingress calls.
@@ -62,17 +59,9 @@ func SessionIngressAuthTokenFromEnv() string {
 	if token := os.Getenv(EnvSessionAccessToken); token != "" {
 		return token
 	}
-	if fdEnv := os.Getenv(EnvWebsocketAuthFileDescriptor); fdEnv != "" {
-		fd, err := strconv.Atoi(fdEnv)
-		if err != nil {
-			return ""
-		}
-		if token := readTokenFile(fdPath(fd)); token != "" {
-			maybePersistTokenForSubprocesses(token)
-			return token
-		}
-	}
-	return readTokenFile(sessionIngressTokenFilePath())
+	source := authfiledescriptor.SessionIngressTokenSource
+	source.WellKnownPath = sessionIngressTokenFilePath()
+	return authfiledescriptor.DefaultReader().Credential(source)
 }
 
 func sessionIngressTokenFilePath() string {
@@ -80,41 +69,6 @@ func sessionIngressTokenFilePath() string {
 		return path
 	}
 	return DefaultSessionIngressTokenPath
-}
-
-func fdPath(fd int) string {
-	if runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
-		return fmt.Sprintf("/dev/fd/%d", fd)
-	}
-	return fmt.Sprintf("/proc/self/fd/%d", fd)
-}
-
-func readTokenFile(path string) string {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(content))
-}
-
-func maybePersistTokenForSubprocesses(token string) {
-	if !isEnvTruthy(os.Getenv(EnvRemote)) {
-		return
-	}
-	path := sessionIngressTokenFilePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return
-	}
-	_ = os.WriteFile(path, []byte(token), 0o600)
-}
-
-func isEnvTruthy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "t", "yes", "y", "on":
-		return true
-	default:
-		return false
-	}
 }
 
 // TranscriptSource identifies which read path returned transcript entries.

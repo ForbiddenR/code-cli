@@ -336,4 +336,18 @@ Phase 27 adds the OAuth token and profile client behavior from `services/oauth/c
 - helper functions preserve TypeScript behavior for scope parsing, Claude.ai auth detection, OAuth expiration buffering, and profile-to-subscription mapping
 - deterministic `httptest` coverage verifies URL construction, request bodies and headers, token refresh/profile sequencing, API-key profile reads, roles/API-key endpoints, helper behavior, validation, and normalized API errors
 
-Wiring OAuth credential storage, auth-file descriptor integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+Wiring OAuth credential storage, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+
+## Phase 28 auth file descriptor credential reader
+
+Phase 28 migrates the shared CCR file-descriptor credential reader from `utils/authFileDescriptor.ts`:
+
+- `internal/authfiledescriptor` models the well-known CCR token directory and fallback files for OAuth tokens, API keys, and session ingress tokens
+- credential discovery follows the TypeScript order: cached read result, inherited file descriptor, then well-known file fallback
+- invalid file descriptor environment values return no credential without falling back, matching the TypeScript safety behavior
+- failed descriptor reads fall back to disk so subprocesses that inherited an env var but not the FD can still authenticate
+- remote CCR environments best-effort persist successfully read FD credentials with `0700` directories and `0600` files for subprocess access
+- `internal/sessioningress` now reuses the shared descriptor reader for its legacy websocket auth descriptor while preserving `CLAUDE_CODE_SESSION_ACCESS_TOKEN` precedence and `CLAUDE_SESSION_INGRESS_TOKEN_FILE` overrides
+- deterministic tests cover OAuth/API-key/session source constants, FD reads, well-known file fallback, caching, remote persistence, non-remote non-persistence, failed FD fallback, invalid FD rejection, and platform-specific descriptor paths
+
+OAuth credential storage, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
