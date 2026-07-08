@@ -322,4 +322,18 @@ Phase 26 adds the OAuth URL/configuration resolver from `constants/oauth.ts` as 
 - OAuth scope constants and MCP client metadata/proxy configuration are represented for later auth/client phases
 - deterministic tests cover production, staging, local, custom allowlist rejection, client ID overrides, file suffixes, scope ordering, and local URL trimming
 
-OAuth token/profile client integration, wiring this resolver into all API clients, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+Wiring this resolver into all API clients, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
+
+## Phase 27 OAuth token/profile client foundation
+
+Phase 27 adds the OAuth token and profile client behavior from `services/oauth/client.ts` and `services/oauth/getOauthProfile.ts`:
+
+- `internal/oauthclient` builds OAuth authorization URLs for console and Claude.ai login flows, including manual redirects, inference-only scope requests, org UUID, login hints, and login method query parameters
+- authorization-code exchange posts the TypeScript-compatible JSON body to the configured token URL, supports optional `expires_in`, and normalizes unauthorized responses to the invalid-code auth message
+- refresh-token exchange requests the Claude.ai OAuth scopes by default, preserves the previous refresh token when the response omits a replacement, computes `expiresAt`, parses scopes, and fetches profile info for subscription and rate-limit metadata
+- profile reads cover both bearer-token `/api/oauth/profile` calls and API-key `/api/claude_cli_profile?account_uuid=...` calls with the OAuth beta header
+- user-role and API-key helpers call the configured roles and create-key endpoints with bearer authorization
+- helper functions preserve TypeScript behavior for scope parsing, Claude.ai auth detection, OAuth expiration buffering, and profile-to-subscription mapping
+- deterministic `httptest` coverage verifies URL construction, request bodies and headers, token refresh/profile sequencing, API-key profile reads, roles/API-key endpoints, helper behavior, validation, and normalized API errors
+
+Wiring OAuth credential storage, auth-file descriptor integration, prompt-cache diagnostics, and remaining teleport integration wiring remain deferred to later phases.
