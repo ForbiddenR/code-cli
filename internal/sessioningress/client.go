@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"code-cli/internal/core"
@@ -28,6 +29,8 @@ type Client struct {
 	afterLastCompact  bool
 	teleportLimit     int
 	maxTeleportPages  int
+	stateMu           sync.Mutex
+	appendLocks       map[string]*sync.Mutex
 	lastUUIDBySession map[string]string
 }
 
@@ -86,6 +89,7 @@ func NewClient(config Config) (*Client, error) {
 		afterLastCompact:  config.AfterLastCompact,
 		teleportLimit:     teleportLimit,
 		maxTeleportPages:  maxTeleportPages,
+		appendLocks:       map[string]*sync.Mutex{},
 		lastUUIDBySession: map[string]string{},
 	}, nil
 }
@@ -102,11 +106,15 @@ func (c *Client) AppendSessionLog(ctx context.Context, sessionID string, entry T
 		return false, fmt.Errorf("entry body is required")
 	}
 
+	appendLock := c.sessionAppendLock(sessionID)
+	appendLock.Lock()
+	defer appendLock.Unlock()
+
 	path := "/v1/session_ingress/session/" + url.PathEscape(sessionID)
 	var lastErr error
 	for attempt := 1; attempt <= c.maxRetries; attempt++ {
 		headers := c.authHeaders()
-		if lastUUID := c.lastUUIDBySession[sessionID]; lastUUID != "" {
+		if lastUUID := c.lastUUID(sessionID); lastUUID != "" {
 			headers.Set("Last-Uuid", lastUUID)
 		}
 		response, err := c.do(ctx, http.MethodPut, path, nil, bytes.NewReader(entry.Body), headers)
@@ -153,7 +161,7 @@ func (c *Client) FetchSessionLogs(ctx context.Context, sessionID string) ([]Entr
 			return nil, err
 		}
 		if lastUUID := findLastUUID(entries); lastUUID != "" {
-			c.lastUUIDBySession[sessionID] = lastUUID
+			c.setLastUUID(sessionID, lastUUID)
 		}
 		return entries, nil
 	}
@@ -200,18 +208,45 @@ func (c *Client) FetchTeleportEvents(ctx context.Context, sessionID string) ([]E
 
 // ClearSession clears cached optimistic ordering state for one session.
 func (c *Client) ClearSession(sessionID string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	delete(c.lastUUIDBySession, sessionID)
 }
 
 // ClearAllSessions clears all cached optimistic ordering state.
 func (c *Client) ClearAllSessions() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	clear(c.lastUUIDBySession)
+}
+
+func (c *Client) sessionAppendLock(sessionID string) *sync.Mutex {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	appendLock := c.appendLocks[sessionID]
+	if appendLock == nil {
+		appendLock = &sync.Mutex{}
+		c.appendLocks[sessionID] = appendLock
+	}
+	return appendLock
+}
+
+func (c *Client) lastUUID(sessionID string) string {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.lastUUIDBySession[sessionID]
+}
+
+func (c *Client) setLastUUID(sessionID string, lastUUID string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.lastUUIDBySession[sessionID] = lastUUID
 }
 
 func (c *Client) handleAppendResponse(ctx context.Context, sessionID string, entryUUID string, response *http.Response) (bool, bool, error) {
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusCreated {
-		c.lastUUIDBySession[sessionID] = entryUUID
+		c.setLastUUID(sessionID, entryUUID)
 		return true, false, nil
 	}
 	if response.StatusCode == http.StatusUnauthorized {
@@ -220,7 +255,7 @@ func (c *Client) handleAppendResponse(ctx context.Context, sessionID string, ent
 	if response.StatusCode == http.StatusConflict {
 		serverLastUUID := response.Header.Get("x-last-uuid")
 		if serverLastUUID == entryUUID {
-			c.lastUUIDBySession[sessionID] = entryUUID
+			c.setLastUUID(sessionID, entryUUID)
 			return true, false, nil
 		}
 		if serverLastUUID == "" {
@@ -233,7 +268,7 @@ func (c *Client) handleAppendResponse(ctx context.Context, sessionID string, ent
 		if serverLastUUID == "" {
 			return false, false, responseError(response)
 		}
-		c.lastUUIDBySession[sessionID] = serverLastUUID
+		c.setLastUUID(sessionID, serverLastUUID)
 		return false, true, fmt.Errorf("session append conflict")
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {

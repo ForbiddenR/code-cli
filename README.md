@@ -196,3 +196,14 @@ Phase 15 extends `internal/sessioningress` with the CCR v2 Teleport Events read 
 - deterministic tests for pagination, null payload filtering, 404 handling, auth errors, and the page cap
 
 JWT discovery, OAuth token refresh, diagnostics/debug logging, fallback coordination between Teleport Events and legacy session ingress, and integration with the higher-level transcript runtime remain deferred to later phases.
+
+## Phase 16 session ingress append sequencing
+
+Phase 16 hardens the session ingress append path to match the per-session sequential behavior in `sessionIngress.ts`:
+
+- concurrent appends for the same session now run through a per-session lock before reading or updating optimistic `Last-Uuid` state
+- appends for different sessions can still proceed concurrently, avoiding a process-wide transcript append bottleneck
+- cached last-UUID state is protected by a mutex for append, fetch, conflict recovery, and clear operations
+- deterministic `httptest` coverage verifies same-session serialization, cross-session concurrency, and continued `Last-Uuid` chaining
+
+JWT discovery, OAuth token refresh, diagnostics/debug logging, fallback coordination between Teleport Events and legacy session ingress, and integration with the higher-level transcript runtime remain deferred to later phases.

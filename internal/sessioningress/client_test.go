@@ -3,9 +3,11 @@ package sessioningress
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +165,122 @@ func TestAppendSessionLogRefetchesOnConflictWithoutHeader(t *testing.T) {
 	if err != nil || !ok || calls != 3 {
 		t.Fatalf("AppendSessionLog() = %v, %v, calls = %d", ok, err, calls)
 	}
+}
+
+func TestAppendSessionLogSerializesSameSession(t *testing.T) {
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	var order []string
+	var lastUUIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		mu.Lock()
+		order = append(order, string(body))
+		lastUUIDs = append(lastUUIDs, r.Header.Get("Last-Uuid"))
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		active--
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	entries := []TranscriptEntry{
+		{UUID: "uuid_1", Body: []byte(`{"uuid":"uuid_1"}`)},
+		{UUID: "uuid_2", Body: []byte(`{"uuid":"uuid_2"}`)},
+		{UUID: "uuid_3", Body: []byte(`{"uuid":"uuid_3"}`)},
+	}
+
+	var wg sync.WaitGroup
+	for _, entry := range entries {
+		wg.Go(func() {
+			ok, err := client.AppendSessionLog(context.Background(), "session_123", entry)
+			if err != nil || !ok {
+				t.Errorf("AppendSessionLog() = %v, %v", ok, err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if maxActive != 1 {
+		t.Fatalf("max active requests = %d", maxActive)
+	}
+	if len(order) != len(entries) || len(lastUUIDs) != len(entries) {
+		t.Fatalf("order = %#v, Last-Uuid = %#v", order, lastUUIDs)
+	}
+	for i := 1; i < len(order); i++ {
+		previousUUID := findLastUUID([]Entry{Entry(order[i-1])})
+		if previousUUID == "" || lastUUIDs[i] != previousUUID {
+			t.Fatalf("request %d Last-Uuid = %q, previous body = %s", i, lastUUIDs[i], order[i-1])
+		}
+	}
+}
+
+func TestAppendSessionLogAllowsDifferentSessionsConcurrently(t *testing.T) {
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondDone := make(chan struct{})
+	var firstOnce sync.Once
+	var secondOnce sync.Once
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/session_ingress/session/session_one":
+			firstOnce.Do(func() { close(firstEntered) })
+			<-releaseFirst
+			w.WriteHeader(http.StatusCreated)
+		case "/v1/session_ingress/session/session_two":
+			w.WriteHeader(http.StatusCreated)
+			secondOnce.Do(func() { close(secondDone) })
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	go func() {
+		ok, err := client.AppendSessionLog(context.Background(), "session_one", TranscriptEntry{UUID: "uuid_1", Body: []byte(`{"uuid":"uuid_1"}`)})
+		if err != nil || !ok {
+			t.Errorf("first AppendSessionLog() = %v, %v", ok, err)
+		}
+	}()
+
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first session append did not start")
+	}
+
+	go func() {
+		ok, err := client.AppendSessionLog(context.Background(), "session_two", TranscriptEntry{UUID: "uuid_2", Body: []byte(`{"uuid":"uuid_2"}`)})
+		if err != nil || !ok {
+			t.Errorf("second AppendSessionLog() = %v, %v", ok, err)
+		}
+	}()
+
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		t.Fatal("second session append was blocked by first session")
+	}
+	close(releaseFirst)
 }
 
 func TestFetchTeleportEvents(t *testing.T) {
