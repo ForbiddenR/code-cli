@@ -378,3 +378,16 @@ Phase 30 migrates the core prompt-cache break-detection logic from `services/api
 - deterministic tests cover changed request state, small-drop suppression, TTL/server-side reasons, expected cache-deletion and compaction drops, tracking-key behavior, Haiku exclusion, cache-control changes, and conversion from core tool definitions
 
 Remaining teleport integration wiring remains deferred to later phases.
+
+## Phase 31 Teleport auth preparation
+
+Phase 31 adds the focused auth preparation layer used by Teleport Sessions API calls in `utils/teleport/api.ts`:
+
+- `internal/teleportauth` validates that Teleport web-session calls have a Claude.ai OAuth access token rather than API-key-only auth
+- prepared request output supplies the `accessToken` and `orgUUID` values required by `internal/sessionsapi` callers
+- organization UUID discovery follows the Go runtime equivalents of the TypeScript flow: cached OAuth account info first, SDK/remote `CLAUDE_CODE_ORGANIZATION_UUID` fallback next, then OAuth profile lookup when the token has `user:profile` scope
+- missing OAuth credentials and missing organization UUIDs return the same user-facing errors as `prepareApiRequest()`
+- profile fetch failures are treated as a missing organization UUID rather than replacing the auth error, matching the TypeScript profile helper's best-effort behavior
+- deterministic tests cover cached account precedence, environment fallback, profile fallback, missing token errors, missing organization errors, profile-scope gating, profile fetch failure handling, token read errors, and profile-scope detection
+
+Further command-layer teleport progress integration remains deferred to later phases.
