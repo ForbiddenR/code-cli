@@ -364,4 +364,17 @@ Phase 29 migrates the durable OAuth credential storage slice from `utils/auth.ts
 - plaintext updates create parent directories, write credentials with `0600` permissions, preserve unknown top-level credential fields, and return the plaintext storage warning
 - deterministic tests cover environment and file-descriptor precedence, bare mode, stored token reads, durable saves, skipped saves, metadata preservation, unknown-field preservation, delete semantics, path construction, and file permissions
 
-Prompt-cache diagnostics and remaining teleport integration wiring remain deferred to later phases.
+Remaining teleport integration wiring remains deferred to later phases.
+
+## Phase 30 prompt-cache diagnostics foundation
+
+Phase 30 migrates the core prompt-cache break-detection logic from `services/api/promptCacheBreakDetection.ts` into a reusable Go package:
+
+- `internal/promptcache` tracks prompt-cache relevant request state by query source, including system prompt text, tool schemas, model, fast mode, cache strategy, beta headers, auto-mode, overage, cached microcompact, effort, and extra body parameters
+- tracked source behavior matches the TypeScript detector: compact shares the main REPL tracking key, common REPL/SDK/agent sources are tracked, short-lived sources are ignored, and the number of tracked sources is capped
+- response checks compare cache-read token drops against the previous response and only report drops that exceed both the 5% relative threshold and the 2,000-token absolute threshold
+- reports explain likely causes from pending request-state changes, TTL windows, or likely server-side cache behavior when the prompt is unchanged
+- cache deletion, compaction, agent cleanup, reset, Haiku-model exclusion, sorted beta comparisons, cache-control-only changes, and MCP tool-name sanitization are represented for later runtime logging integration
+- deterministic tests cover changed request state, small-drop suppression, TTL/server-side reasons, expected cache-deletion and compaction drops, tracking-key behavior, Haiku exclusion, cache-control changes, and conversion from core tool definitions
+
+Remaining teleport integration wiring remains deferred to later phases.
