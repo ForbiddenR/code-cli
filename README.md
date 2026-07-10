@@ -404,3 +404,16 @@ Phase 32 adds the first authenticated integration facade around the Sessions API
 - deterministic `httptest` coverage verifies auth header propagation, per-call auth preparation, list/fetch/send/title delegation, preparation failures before HTTP, Sessions API error propagation, missing-preparer errors, and retry configuration passthrough
 
 Command-layer teleport progress integration, debug logging, viewer-only remote session behavior, and runtime wiring into `RemoteSessionManager` remain deferred to later phases.
+
+## Phase 33 Sessions WebSocket foundation
+
+Phase 33 starts migrating the remote Sessions WebSocket behavior from `remote/SessionsWebSocket.ts` into a focused Go package:
+
+- `internal/sessionswebsocket` builds the `/v1/sessions/ws/{sessionID}/subscribe` URL, converting HTTPS base URLs to WSS and HTTP local base URLs to WS
+- OAuth WebSocket headers reuse the Sessions API Anthropic version and bearer-token shape
+- raw inbound WebSocket messages are accepted when they are JSON objects with a string `type` field, matching the TypeScript client's forward-compatible message guard
+- reconnect policy constants and pure close-code decision logic mirror the TypeScript behavior: 2-second transient reconnects, five general reconnect attempts, three special `4001` session-not-found retries with increasing delay, and permanent `4003` unauthorized closes
+- outbound control request and response envelope helpers model interrupt requests plus success/error control responses for later remote-session manager wiring
+- deterministic tests cover URL construction, auth headers, message detection, raw-message copying, reconnect decision branches, control envelope JSON, and TypeScript parity constants
+
+Actual WebSocket dialing, proxy/TLS integration, ping loops, timer scheduling, and runtime integration with a Go remote session manager remain deferred to later phases.
