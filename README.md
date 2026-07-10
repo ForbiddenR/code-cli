@@ -417,3 +417,18 @@ Phase 33 starts migrating the remote Sessions WebSocket behavior from `remote/Se
 - deterministic tests cover URL construction, auth headers, message detection, raw-message copying, reconnect decision branches, control envelope JSON, and TypeScript parity constants
 
 Actual WebSocket dialing, proxy/TLS integration, ping loops, timer scheduling, and runtime integration with a Go remote session manager remain deferred to later phases.
+
+## Phase 34 remote session manager foundation
+
+Phase 34 migrates the pure coordination behavior from `remote/RemoteSessionManager.ts` into a testable Go package:
+
+- `internal/remotesession` models remote session config, callbacks, simplified permission responses, and the `can_use_tool` control-request subset
+- the manager accepts injected control-transport and event-sender interfaces so WebSocket dialing and HTTP event posting can remain separately tested packages
+- inbound message handling mirrors the TypeScript manager: permission control requests are stored and surfaced to callbacks, control cancel requests clear pending permission state, control responses are ignored, and all other typed messages are forwarded as SDK messages
+- unsupported control request subtypes produce an error `control_response` envelope so the remote server is not left waiting
+- permission responses clear pending requests and send the TypeScript-compatible allow/deny response body shape
+- user-message sends delegate to the Teleport event sender with session ID and caller-provided UUID options, while failed sends surface through the error callback
+- viewer-only sessions suppress interrupt control requests, matching the TypeScript comment for `claude assistant` viewer behavior
+- deterministic tests cover config construction, connection callbacks, message routing, permission request storage/cancellation, unsupported subtype responses, permission allow/deny responses, send-message delegation, error callbacks, viewer-only cancellation, reconnect, disconnect, and pending-state cleanup
+
+Concrete WebSocket transport implementation, UI callback wiring, title update policy, reconnect timers, and command-layer remote-session integration remain deferred to later phases.
