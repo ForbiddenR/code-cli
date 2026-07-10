@@ -391,3 +391,16 @@ Phase 31 adds the focused auth preparation layer used by Teleport Sessions API c
 - deterministic tests cover cached account precedence, environment fallback, profile fallback, missing token errors, missing organization errors, profile-scope gating, profile fetch failure handling, token read errors, and profile-scope detection
 
 Further command-layer teleport progress integration remains deferred to later phases.
+
+## Phase 32 Teleport API facade
+
+Phase 32 adds the first authenticated integration facade around the Sessions API primitives from `utils/teleport/api.ts`:
+
+- `internal/teleportapi` prepares Claude.ai OAuth auth with `internal/teleportauth` before constructing per-call `internal/sessionsapi` clients
+- list and fetch helpers delegate to `GET /v1/sessions` and `GET /v1/sessions/{sessionID}` with the prepared access token and organization UUID
+- remote user-event sends and session-title updates reuse the existing Sessions API request shapes while centralizing Teleport auth preparation in one package
+- missing auth preparers return a deterministic `teleportauth.ErrMissingPreparer` error before any HTTP request is attempted
+- retry, timeout, sleep, base URL, and HTTP client configuration pass through to the lower-level Sessions API client without mutating caller-provided retry slices
+- deterministic `httptest` coverage verifies auth header propagation, per-call auth preparation, list/fetch/send/title delegation, preparation failures before HTTP, Sessions API error propagation, missing-preparer errors, and retry configuration passthrough
+
+Command-layer teleport progress integration, debug logging, viewer-only remote session behavior, and runtime wiring into `RemoteSessionManager` remain deferred to later phases.

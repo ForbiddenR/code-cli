@@ -2,6 +2,7 @@ package teleportauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -19,6 +20,9 @@ const (
 	// MissingOrganizationUUIDMessage matches the TypeScript prepareApiRequest organization error.
 	MissingOrganizationUUIDMessage = "Unable to get organization UUID"
 )
+
+// ErrMissingPreparer is returned when an integration helper has no auth preparer.
+var ErrMissingPreparer = errors.New("teleport auth preparer is required")
 
 // TokenGetter returns Claude.ai OAuth tokens from the configured auth storage layer.
 type TokenGetter interface {
