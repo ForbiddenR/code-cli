@@ -485,3 +485,16 @@ Phase 38 migrates remote session event polling and archive helpers from `utils/t
 - deterministic `httptest` coverage verifies pagination, filtering, skip-metadata, invalid event pages, archive 200/409 success, auth preparation, validation errors, and API error normalization
 
 SDK message-to-REPL conversion, live poll loops, UI wiring, and full teleport-to-remote session creation orchestration remain deferred to later phases.
+
+## Phase 39 git remote parsing and session repository validation
+
+Phase 39 migrates pure git remote parsing from `utils/detectRepository.ts` and the comparison core of `validateSessionRepository` in `utils/teleport.tsx` into a focused Go package:
+
+- `internal/gitremote` models `ParsedRepository` host/owner/name triples and `ValidationResult` status values (`match`, `mismatch`, `not_in_repo`, `no_repo_required`, `error`)
+- `ParseGitRemote` accepts SSH SCP-style, `https`/`http`/`ssh`/`git` URL remotes, preserves HTTPS ports, drops SSH/git ports, and rejects SSH config aliases that fail the real-hostname check
+- `ParseGitHubRepository` returns github.com-only `owner/repo` strings and also accepts plain `owner/repo` inputs for backward compatibility
+- `LooksLikeRealHostname` requires a dot and a purely alphabetic TLD, matching the TypeScript alias filter for values like `github.com-work`
+- `ValidateSessionRepository` is pure: callers supply the already-detected current repository and a Sessions API session resource; it reads the first `git_repository` source URL, compares owner/repo case-insensitively, and compares hosts after stripping ports
+- deterministic unit tests cover remote URL shapes, GHE ports, alias rejection, plain owner/repo parsing, no-repo/not-in-repo/match/mismatch/host-mismatch validation paths, and port-insensitive host matching
+
+Live `git remote` discovery, repository caches, and command-layer teleport resume UI remain deferred to later phases.
