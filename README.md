@@ -458,3 +458,16 @@ Phase 36 migrates the pure environment-selection logic from `utils/teleport/envi
 - deterministic unit tests cover empty lists, non-bridge defaults, bridge-only fallback, matching and unknown defaults, highest-priority source selection, `flagSettings` skipping, source order parity, and input immutability
 
 Settings file loading, automatic default environment creation, live environment probing, telemetry, and command-layer Teleport UI integration remain deferred to later phases.
+
+## Phase 37 git seed-bundle foundation
+
+Phase 37 migrates the CCR seed-bundle create/upload helpers from `utils/teleport/gitBundle.ts` into a focused Go package:
+
+- `internal/gitbundle` models bundle scopes (`all` / `head` / `squashed`), fail reasons (`git_error` / `too_large` / `empty_repo`), and upload result shapes
+- pure helpers cover the default 100 MiB size budget, `bundle create` argument assembly (including optional `refs/seed/stash`), squashed-tree selection, seed-ref cleanup lists, and TypeScript-compatible error formatting
+- `CreateAndUploadGitBundle` orchestrates the TypeScript fallback chain: delete stale seed refs → empty-repo check → `stash create` WIP capture → `--all` → `HEAD` → parentless `commit-tree` squashed root → Files API upload as `_source_seed.bundle`
+- git execution, Files API upload, filesystem temp/stat/remove, and git-root discovery are injected interfaces so the package stays deterministic without a live repository or network
+- cleanup always removes the temp bundle path and seed refs after the attempt, matching the TypeScript `finally` behavior
+- deterministic unit tests cover defaults, arg/tree/ref helpers, not-in-repo and empty-repo failures, all-scope success with WIP, multi-tier fallback to squashed, too-large exhaustion, git errors, upload failures, missing dependencies, and CWD plumbing
+
+Concrete OS git runner / temp-file adapters, GrowthBook max-bytes wiring, analytics event emission, and Teleport session-create orchestration remain deferred to later phases.
