@@ -1,6 +1,7 @@
 package sessionsapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -16,6 +17,12 @@ const (
 	DefaultTimeout = 15 * time.Second
 	// DefaultSendEventTimeout matches the remote event send timeout in teleport/api.ts.
 	DefaultSendEventTimeout = 30 * time.Second
+	// DefaultPollEventsTimeout matches the pollRemoteSessionEvents request timeout in teleport.tsx.
+	DefaultPollEventsTimeout = 30 * time.Second
+	// DefaultArchiveTimeout matches the archiveRemoteSession request timeout in teleport.tsx.
+	DefaultArchiveTimeout = 10 * time.Second
+	// MaxEventPages is the safety valve against stuck cursors while paging session events.
+	MaxEventPages = 50
 )
 
 // DefaultRetryDelays matches axiosGetWithRetry in teleport/api.ts.
@@ -156,4 +163,30 @@ type remoteMessage struct {
 
 type updateSessionTitleRequest struct {
 	Title string `json:"title"`
+}
+
+// PollEventsOptions configures PollRemoteSessionEvents.
+type PollEventsOptions struct {
+	// AfterID is the previous response's last event id. Empty fetches from the start.
+	AfterID string
+	// SkipMetadata avoids the per-call GET /v1/sessions/{id} when branch/status aren't needed.
+	SkipMetadata bool
+	// MaxPages overrides MaxEventPages when positive.
+	MaxPages int
+}
+
+// PollEventsResult mirrors PollRemoteSessionResponse from teleport.tsx.
+type PollEventsResult struct {
+	NewEvents     []json.RawMessage
+	LastEventID   *string
+	Branch        *string
+	SessionStatus *SessionStatus
+}
+
+// ListSessionEventsResponse is one page from GET /v1/sessions/{id}/events.
+type ListSessionEventsResponse struct {
+	Data    []json.RawMessage `json:"data"`
+	HasMore bool              `json:"has_more"`
+	FirstID *string           `json:"first_id"`
+	LastID  *string           `json:"last_id"`
 }

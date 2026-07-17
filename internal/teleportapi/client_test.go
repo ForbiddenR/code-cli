@@ -265,3 +265,54 @@ func (g *countingTokenGetter) GetClaudeAIOAuthTokens() (*oauthstorage.Tokens, er
 	g.calls++
 	return g.tokens, g.err
 }
+
+func TestPollRemoteSessionEventsPreparesAuth(t *testing.T) {
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions/sess_1/events" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("x-organization-uuid"); got != "org_env" {
+			t.Fatalf("x-organization-uuid = %q", got)
+		}
+		sawAuth = true
+		fmt.Fprint(w, `{"data":[{"type":"assistant","session_id":"sess_1"}],"has_more":false,"first_id":"e1","last_id":"e1"}`)
+	}))
+	defer server.Close()
+
+	client := newPreparedClient(server.URL, &countingTokenGetter{tokens: &oauthstorage.Tokens{AccessToken: "access"}})
+	result, err := client.PollRemoteSessionEvents(context.Background(), "sess_1", sessionsapi.PollEventsOptions{SkipMetadata: true})
+	if err != nil {
+		t.Fatalf("PollRemoteSessionEvents() error = %v", err)
+	}
+	if !sawAuth || len(result.NewEvents) != 1 || result.LastEventID == nil || *result.LastEventID != "e1" {
+		t.Fatalf("result = %#v sawAuth=%v", result, sawAuth)
+	}
+}
+
+func TestArchiveRemoteSessionPreparesAuth(t *testing.T) {
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/sess_1/archive" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("x-organization-uuid"); got != "org_env" {
+			t.Fatalf("x-organization-uuid = %q", got)
+		}
+		sawAuth = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newPreparedClient(server.URL, &countingTokenGetter{tokens: &oauthstorage.Tokens{AccessToken: "access"}})
+	ok, err := client.ArchiveRemoteSession(context.Background(), "sess_1")
+	if err != nil || !ok || !sawAuth {
+		t.Fatalf("ok=%v err=%v sawAuth=%v", ok, err, sawAuth)
+	}
+}

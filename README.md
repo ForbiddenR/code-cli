@@ -471,3 +471,17 @@ Phase 37 migrates the CCR seed-bundle create/upload helpers from `utils/teleport
 - deterministic unit tests cover defaults, arg/tree/ref helpers, not-in-repo and empty-repo failures, all-scope success with WIP, multi-tier fallback to squashed, too-large exhaustion, git errors, upload failures, missing dependencies, and CWD plumbing
 
 Concrete OS git runner / temp-file adapters, GrowthBook max-bytes wiring, analytics event emission, and Teleport session-create orchestration remain deferred to later phases.
+
+## Phase 38 remote session event poll and archive foundation
+
+Phase 38 migrates remote session event polling and archive helpers from `utils/teleport.tsx` into the existing Sessions API packages:
+
+- `internal/sessionsapi` adds `PollRemoteSessionEvents` for `GET /v1/sessions/{id}/events` with cursor pagination via `after_id`
+- event paging preserves the TypeScript 50-page safety cap, 30-second poll timeout, and filtering that drops `env_manager_log` / `control_response` while requiring a string `type` and `session_id`
+- when metadata is not skipped, poll fetches the session resource and reports branch + `session_status` using existing `FetchSession` / `GetBranchFromSession` helpers
+- `ArchiveRemoteSession` posts to `/v1/sessions/{id}/archive` with a 10-second timeout and treats HTTP 200 and 409 as success, matching the TypeScript best-effort archive semantics
+- pure helper `IsSDKSessionEvent` encodes the event-filter predicate for unit testing without HTTP
+- `internal/teleportapi` facade methods prepare Claude.ai OAuth auth then delegate poll/archive calls
+- deterministic `httptest` coverage verifies pagination, filtering, skip-metadata, invalid event pages, archive 200/409 success, auth preparation, validation errors, and API error normalization
+
+SDK message-to-REPL conversion, live poll loops, UI wiring, and full teleport-to-remote session creation orchestration remain deferred to later phases.

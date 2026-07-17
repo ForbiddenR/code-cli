@@ -185,6 +185,136 @@ func (c *Client) UpdateSessionTitle(ctx context.Context, sessionID string, title
 	return false, responseError(response)
 }
 
+// PollRemoteSessionEvents pages session events and filters them into SDK messages,
+// mirroring pollRemoteSessionEvents from teleport.tsx.
+func (c *Client) PollRemoteSessionEvents(ctx context.Context, sessionID string, opts PollEventsOptions) (PollEventsResult, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return PollEventsResult{}, fmt.Errorf("session id is required")
+	}
+
+	maxPages := opts.MaxPages
+	if maxPages <= 0 {
+		maxPages = MaxEventPages
+	}
+
+	var (
+		sdkMessages []json.RawMessage
+		cursor      = strings.TrimSpace(opts.AfterID)
+	)
+	for page := 0; page < maxPages; page++ {
+		var query url.Values
+		if cursor != "" {
+			query = url.Values{"after_id": []string{cursor}}
+		}
+		response, err := c.doWithBodyTimeout(ctx, DefaultPollEventsTimeout, http.MethodGet, "/v1/sessions/"+url.PathEscape(sessionID)+"/events", query, nil)
+		if err != nil {
+			return PollEventsResult{}, err
+		}
+		pageResult, err := decodeSessionEventsPage(response)
+		if err != nil {
+			return PollEventsResult{}, err
+		}
+		for _, event := range pageResult.Data {
+			if IsSDKSessionEvent(event) {
+				sdkMessages = append(sdkMessages, append(json.RawMessage(nil), event...))
+			}
+		}
+		if pageResult.LastID == nil || strings.TrimSpace(*pageResult.LastID) == "" {
+			break
+		}
+		cursor = *pageResult.LastID
+		if !pageResult.HasMore {
+			break
+		}
+	}
+
+	result := PollEventsResult{NewEvents: sdkMessages}
+	if cursor != "" {
+		last := cursor
+		result.LastEventID = &last
+	}
+	if opts.SkipMetadata {
+		return result, nil
+	}
+
+	session, err := c.FetchSession(ctx, sessionID)
+	if err == nil {
+		if branch, ok := GetBranchFromSession(session); ok {
+			result.Branch = &branch
+		}
+		status := session.SessionStatus
+		result.SessionStatus = &status
+	}
+	return result, nil
+}
+
+// ArchiveRemoteSession archives a remote session via POST /v1/sessions/{id}/archive.
+// 200 and 409 (already archived) are treated as success, matching archiveRemoteSession.
+func (c *Client) ArchiveRemoteSession(ctx context.Context, sessionID string) (bool, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return false, fmt.Errorf("session id is required")
+	}
+	response, err := c.doWithBodyTimeout(ctx, DefaultArchiveTimeout, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/archive", nil, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusConflict {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return true, nil
+	}
+	return false, responseError(response)
+}
+
+// IsSDKSessionEvent reports whether a raw events-page item should be treated as an
+// SDK message for remote polling. It keeps objects with a string type and session_id,
+// and drops env_manager_log / control_response noise.
+func IsSDKSessionEvent(raw json.RawMessage) bool {
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope == nil {
+		return false
+	}
+	typeValue, ok := envelope["type"].(string)
+	if !ok || typeValue == "" {
+		return false
+	}
+	if typeValue == "env_manager_log" || typeValue == "control_response" {
+		return false
+	}
+	if _, ok := envelope["session_id"]; !ok {
+		return false
+	}
+	return true
+}
+
+func decodeSessionEventsPage(response *http.Response) (ListSessionEventsResponse, error) {
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ListSessionEventsResponse{}, responseError(response)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	if err != nil {
+		return ListSessionEventsResponse{}, fmt.Errorf("read session events response: %w", err)
+	}
+	var probe struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return ListSessionEventsResponse{}, fmt.Errorf("decode session events response: %w", err)
+	}
+	if len(probe.Data) == 0 || string(probe.Data) == "null" {
+		return ListSessionEventsResponse{}, fmt.Errorf("invalid events response")
+	}
+	var page ListSessionEventsResponse
+	if err := json.Unmarshal(body, &page); err != nil {
+		return ListSessionEventsResponse{}, fmt.Errorf("decode session events response: %w", err)
+	}
+	if page.Data == nil {
+		return ListSessionEventsResponse{}, fmt.Errorf("invalid events response")
+	}
+	return page, nil
+}
+
 // OAuthHeaders returns the shared OAuth headers used by teleport API requests.
 func OAuthHeaders(accessToken string) http.Header {
 	headers := http.Header{}

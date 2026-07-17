@@ -103,3 +103,21 @@ func (c *Client) prepare(ctx context.Context) (teleportauth.PreparedRequest, err
 	}
 	return c.preparer.PrepareAPIRequest(ctx)
 }
+
+// PollRemoteSessionEvents prepares auth and polls remote session events.
+func (c *Client) PollRemoteSessionEvents(ctx context.Context, sessionID string, opts sessionsapi.PollEventsOptions) (sessionsapi.PollEventsResult, error) {
+	client, err := c.sessionsClient(ctx)
+	if err != nil {
+		return sessionsapi.PollEventsResult{}, err
+	}
+	return client.PollRemoteSessionEvents(ctx, sessionID, opts)
+}
+
+// ArchiveRemoteSession prepares auth and archives a remote session.
+func (c *Client) ArchiveRemoteSession(ctx context.Context, sessionID string) (bool, error) {
+	client, err := c.sessionsClient(ctx)
+	if err != nil {
+		return false, err
+	}
+	return client.ArchiveRemoteSession(ctx, sessionID)
+}
