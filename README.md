@@ -432,3 +432,29 @@ Phase 34 migrates the pure coordination behavior from `remote/RemoteSessionManag
 - deterministic tests cover config construction, connection callbacks, message routing, permission request storage/cancellation, unsupported subtype responses, permission allow/deny responses, send-message delegation, error callbacks, viewer-only cancellation, reconnect, disconnect, and pending-state cleanup
 
 Concrete WebSocket transport implementation, UI callback wiring, title update policy, reconnect timers, and command-layer remote-session integration remain deferred to later phases.
+
+## Phase 35 environment providers API foundation
+
+Phase 35 migrates the environment-provider API helpers from `utils/teleport/environments.ts` into a focused Go package:
+
+- `internal/environments` models environment provider resources, list responses, environment kinds, and active state values
+- `FetchEnvironments` prepares Claude.ai OAuth auth through `internal/teleportauth`, calls `GET /v1/environment_providers`, and returns the typed environment list
+- `CreateDefaultCloudEnvironment` posts the TypeScript-compatible default `anthropic_cloud` body to `/v1/environment_providers/cloud/create`
+- the default cloud request preserves the TypeScript config: `/home/user` cwd, no init script, empty environment map, Python 3.11 and Node 20 language entries, and default-host network access
+- OAuth headers reuse the Sessions API Anthropic version, propagate `x-organization-uuid`, and include the CCR BYOC beta header only for cloud-environment creation
+- client construction supports configurable base URL, HTTP client, and 15-second default timeout while returning deterministic validation errors for invalid base URLs and empty environment names
+- deterministic `httptest` coverage verifies auth preparation, request headers, response parsing, create body shape, preparation failures before HTTP, missing-preparer errors, API error normalization, decode errors, base path joining, and default/custom client configuration
+
+## Phase 36 environment selection foundation
+
+Phase 36 migrates the pure environment-selection logic from `utils/teleport/environmentSelection.ts` into a focused Go package:
+
+- `internal/environmentselection` computes which environment would be used from an available environment list and a merged `defaultEnvironmentId`
+- selection defaults to the first non-`bridge` environment, falling back to the first environment when only bridge environments exist
+- when a matching merged default environment id is present, that environment is selected instead of the non-bridge default
+- setting-source attribution walks `userSettings` → `projectSettings` → `localSettings` → `flagSettings` → `policySettings` from highest to lowest priority and reports the highest-priority non-`flagSettings` source that owns the selected default
+- settings I/O is injected through a `SettingsProvider` callback so this phase stays pure and does not depend on disk-backed settings loading
+- the available-environment slice returned to callers is a defensive copy so selection results do not mutate caller input
+- deterministic unit tests cover empty lists, non-bridge defaults, bridge-only fallback, matching and unknown defaults, highest-priority source selection, `flagSettings` skipping, source order parity, and input immutability
+
+Settings file loading, automatic default environment creation, live environment probing, telemetry, and command-layer Teleport UI integration remain deferred to later phases.
