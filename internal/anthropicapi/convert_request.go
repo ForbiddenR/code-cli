@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
 func newMessageParams(req MessageRequest) (anthropic.MessageNewParams, error) {
@@ -18,7 +19,7 @@ func newMessageParams(req MessageRequest) (anthropic.MessageNewParams, error) {
 		return anthropic.MessageNewParams{}, err
 	}
 	system := systemParams(req.System)
-	tools, err := toolParams(req.Tools)
+	tools, err := messageTools(req.Tools, req.ServerTools)
 	if err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
@@ -30,6 +31,13 @@ func newMessageParams(req MessageRequest) (anthropic.MessageNewParams, error) {
 		StopSequences: append([]string(nil), req.StopSequences...),
 		System:        system,
 		Tools:         tools,
+	}
+	if req.ToolChoice != nil {
+		choice, err := toolChoiceParam(*req.ToolChoice)
+		if err != nil {
+			return anthropic.MessageNewParams{}, err
+		}
+		params.ToolChoice = choice
 	}
 	if len(req.Metadata) > 0 {
 		metadata, err := metadataParam(req.Metadata)
@@ -163,6 +171,65 @@ func toolParams(tools []core.ToolDefinition) ([]anthropic.ToolUnionParam, error)
 		params = append(params, anthropic.ToolUnionParam{OfTool: &toolParam})
 	}
 	return params, nil
+}
+
+func messageTools(custom []core.ToolDefinition, server []ServerToolDefinition) ([]anthropic.ToolUnionParam, error) {
+	tools, err := toolParams(custom)
+	if err != nil {
+		return nil, err
+	}
+	serverTools, err := serverToolParams(server)
+	if err != nil {
+		return nil, err
+	}
+	return append(tools, serverTools...), nil
+}
+
+func serverToolParams(tools []ServerToolDefinition) ([]anthropic.ToolUnionParam, error) {
+	params := make([]anthropic.ToolUnionParam, 0, len(tools))
+	for i, tool := range tools {
+		toolParam, err := serverToolParam(tool)
+		if err != nil {
+			return nil, fmt.Errorf("convert server tool %d: %w", i, err)
+		}
+		params = append(params, toolParam)
+	}
+	return params, nil
+}
+
+func serverToolParam(tool ServerToolDefinition) (anthropic.ToolUnionParam, error) {
+	if tool.Type != ServerToolWebSearch20250305 {
+		return anthropic.ToolUnionParam{}, fmt.Errorf("unsupported server tool type %q", tool.Type)
+	}
+	if tool.Name == "" {
+		tool.Name = "web_search"
+	}
+	if tool.Name != "web_search" {
+		return anthropic.ToolUnionParam{}, fmt.Errorf("unsupported web-search tool name %q", tool.Name)
+	}
+
+	variant := anthropic.WebSearchTool20250305Param{
+		AllowedDomains: append([]string(nil), tool.AllowedDomains...),
+		BlockedDomains: append([]string(nil), tool.BlockedDomains...),
+		Name:           constant.WebSearch(tool.Name),
+		Type:           constant.WebSearch20250305(tool.Type),
+	}
+	if tool.MaxUses > 0 {
+		variant.MaxUses = param.NewOpt(int64(tool.MaxUses))
+	}
+	return anthropic.ToolUnionParam{OfWebSearchTool20250305: &variant}, nil
+}
+
+func toolChoiceParam(choice ToolChoice) (anthropic.ToolChoiceUnionParam, error) {
+	switch choice.Type {
+	case "tool":
+		if choice.Name == "" {
+			return anthropic.ToolChoiceUnionParam{}, fmt.Errorf("tool choice name is required")
+		}
+		return anthropic.ToolChoiceParamOfTool(choice.Name), nil
+	default:
+		return anthropic.ToolChoiceUnionParam{}, fmt.Errorf("unsupported tool choice type %q", choice.Type)
+	}
 }
 
 func tokenCountToolParams(tools []core.ToolDefinition) ([]anthropic.MessageCountTokensToolUnionParam, error) {

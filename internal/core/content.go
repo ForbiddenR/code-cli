@@ -14,16 +14,17 @@ const (
 type ContentBlockType string
 
 const (
-	ContentBlockText              ContentBlockType = "text"
-	ContentBlockImage             ContentBlockType = "image"
-	ContentBlockDocument          ContentBlockType = "document"
-	ContentBlockToolUse           ContentBlockType = "tool_use"
-	ContentBlockToolResult        ContentBlockType = "tool_result"
-	ContentBlockThinking          ContentBlockType = "thinking"
-	ContentBlockRedactedThinking  ContentBlockType = "redacted_thinking"
-	ContentBlockServerToolUse     ContentBlockType = "server_tool_use"
-	ContentBlockWebSearchResult   ContentBlockType = "web_search_result"
-	ContentBlockCodeExecutionTool ContentBlockType = "code_execution_tool_result"
+	ContentBlockText                ContentBlockType = "text"
+	ContentBlockImage               ContentBlockType = "image"
+	ContentBlockDocument            ContentBlockType = "document"
+	ContentBlockToolUse             ContentBlockType = "tool_use"
+	ContentBlockToolResult          ContentBlockType = "tool_result"
+	ContentBlockThinking            ContentBlockType = "thinking"
+	ContentBlockRedactedThinking    ContentBlockType = "redacted_thinking"
+	ContentBlockServerToolUse       ContentBlockType = "server_tool_use"
+	ContentBlockWebSearchToolResult ContentBlockType = "web_search_tool_result"
+	ContentBlockWebSearchResult     ContentBlockType = "web_search_result"
+	ContentBlockCodeExecutionTool   ContentBlockType = "code_execution_tool_result"
 )
 
 // CacheControl describes prompt-cache behavior for cacheable content blocks.
@@ -49,19 +50,24 @@ type ContentSource struct {
 
 // ContentBlock is the normalized content unit used by the query engine and API boundary.
 type ContentBlock struct {
-	Type         ContentBlockType `json:"type"`
-	Text         string           `json:"text,omitempty"`
-	Thinking     string           `json:"thinking,omitempty"`
-	Data         string           `json:"data,omitempty"`
-	ID           string           `json:"id,omitempty"`
-	Name         string           `json:"name,omitempty"`
-	Input        json.RawMessage  `json:"input,omitempty"`
-	ToolUseID    string           `json:"tool_use_id,omitempty"`
-	Content      []ContentBlock   `json:"content,omitempty"`
-	IsError      bool             `json:"is_error,omitempty"`
-	Source       *ContentSource   `json:"source,omitempty"`
-	CacheControl *CacheControl    `json:"cache_control,omitempty"`
-	Signature    string           `json:"signature,omitempty"`
+	Type             ContentBlockType `json:"type"`
+	Text             string           `json:"text,omitempty"`
+	Thinking         string           `json:"thinking,omitempty"`
+	Data             string           `json:"data,omitempty"`
+	ID               string           `json:"id,omitempty"`
+	Name             string           `json:"name,omitempty"`
+	Input            json.RawMessage  `json:"input,omitempty"`
+	ToolUseID        string           `json:"tool_use_id,omitempty"`
+	Content          []ContentBlock   `json:"content,omitempty"`
+	IsError          bool             `json:"is_error,omitempty"`
+	Source           *ContentSource   `json:"source,omitempty"`
+	CacheControl     *CacheControl    `json:"cache_control,omitempty"`
+	Signature        string           `json:"signature,omitempty"`
+	Title            string           `json:"title,omitempty"`
+	URL              string           `json:"url,omitempty"`
+	PageAge          string           `json:"page_age,omitempty"`
+	EncryptedContent string           `json:"encrypted_content,omitempty"`
+	ErrorCode        string           `json:"error_code,omitempty"`
 }
 
 // TextBlock returns a normalized text content block.

@@ -69,6 +69,48 @@ func TestNormalizeMessagePreservesContentAndUsage(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessagePreservesWebSearchBlocks(t *testing.T) {
+	var sdkMessage anthropic.Message
+	data := []byte(`{
+		"id":"msg_search",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-opus-4-8",
+		"content":[
+			{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{"query":"latest Go"}},
+			{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[
+				{"type":"web_search_result","title":"Go","url":"https://go.dev","page_age":"today","encrypted_content":"opaque"}
+			]},
+			{"type":"web_search_tool_result","tool_use_id":"srv_2","content":{"type":"web_search_tool_result_error","error_code":"unavailable"}}
+		],
+		"usage":{"input_tokens":1,"output_tokens":2}
+	}`)
+	if err := json.Unmarshal(data, &sdkMessage); err != nil {
+		t.Fatalf("unmarshal SDK message: %v", err)
+	}
+
+	got, err := normalizeMessage(&sdkMessage)
+	if err != nil {
+		t.Fatalf("normalizeMessage() error = %v", err)
+	}
+	if len(got.Content) != 3 {
+		t.Fatalf("content length = %d", len(got.Content))
+	}
+	if got.Content[0].Type != core.ContentBlockServerToolUse || got.Content[0].ID != "srv_1" || string(got.Content[0].Input) != `{"query":"latest Go"}` {
+		t.Fatalf("server tool block = %#v", got.Content[0])
+	}
+	result := got.Content[1]
+	if result.Type != core.ContentBlockWebSearchToolResult || result.ToolUseID != "srv_1" || len(result.Content) != 1 {
+		t.Fatalf("web search result block = %#v", result)
+	}
+	if result.Content[0].Type != core.ContentBlockWebSearchResult || result.Content[0].Title != "Go" || result.Content[0].URL != "https://go.dev" || result.Content[0].PageAge != "today" || result.Content[0].EncryptedContent != "opaque" {
+		t.Fatalf("search hit = %#v", result.Content[0])
+	}
+	if got.Content[2].ErrorCode != "unavailable" {
+		t.Fatalf("search error block = %#v", got.Content[2])
+	}
+}
+
 func TestNormalizeNestedContentString(t *testing.T) {
 	content, err := normalizeNestedContent(json.RawMessage(`"plain result"`))
 	if err != nil {

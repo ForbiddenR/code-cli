@@ -74,6 +74,29 @@ func TestNormalizeStreamEventContentBlockStart(t *testing.T) {
 	}
 }
 
+func TestNormalizeStreamEventWebSearchResultBlock(t *testing.T) {
+	event := streamEventFromJSON(t, `{
+		"type":"content_block_start",
+		"index":1,
+		"content_block":{
+			"type":"web_search_tool_result",
+			"tool_use_id":"srv_1",
+			"content":[{"type":"web_search_result","title":"Go","url":"https://go.dev"}]
+		}
+	}`)
+
+	got, err := normalizeStreamEvent(event)
+	if err != nil {
+		t.Fatalf("normalizeStreamEvent() error = %v", err)
+	}
+	if got.Block == nil || got.Block.Type != core.ContentBlockWebSearchToolResult || got.Block.ToolUseID != "srv_1" {
+		t.Fatalf("block = %#v", got.Block)
+	}
+	if len(got.Block.Content) != 1 || got.Block.Content[0].Title != "Go" || got.Block.Content[0].URL != "https://go.dev" {
+		t.Fatalf("nested search result = %#v", got.Block.Content)
+	}
+}
+
 func streamEventFromJSON(t *testing.T, data string) anthropic.MessageStreamEventUnion {
 	t.Helper()
 	var event anthropic.MessageStreamEventUnion

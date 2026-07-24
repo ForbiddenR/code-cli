@@ -18,16 +18,36 @@ type Client interface {
 
 // MessageRequest is the normalized input for a Claude Messages API call.
 type MessageRequest struct {
-	Model         core.ModelID          `json:"model"`
-	MaxTokens     int                   `json:"max_tokens"`
-	System        []core.SystemBlock    `json:"system,omitempty"`
-	Messages      []core.Message        `json:"messages"`
-	Tools         []core.ToolDefinition `json:"tools,omitempty"`
-	Thinking      *core.ThinkingConfig  `json:"thinking,omitempty"`
-	OutputConfig  *core.OutputConfig    `json:"output_config,omitempty"`
-	StopSequences []string              `json:"stop_sequences,omitempty"`
-	Metadata      map[string]string     `json:"metadata,omitempty"`
-	Betas         []string              `json:"betas,omitempty"`
+	Model         core.ModelID           `json:"model"`
+	MaxTokens     int                    `json:"max_tokens"`
+	System        []core.SystemBlock     `json:"system,omitempty"`
+	Messages      []core.Message         `json:"messages"`
+	Tools         []core.ToolDefinition  `json:"tools,omitempty"`
+	ServerTools   []ServerToolDefinition `json:"server_tools,omitempty"`
+	ToolChoice    *ToolChoice            `json:"tool_choice,omitempty"`
+	Thinking      *core.ThinkingConfig   `json:"thinking,omitempty"`
+	OutputConfig  *core.OutputConfig     `json:"output_config,omitempty"`
+	StopSequences []string               `json:"stop_sequences,omitempty"`
+	Metadata      map[string]string      `json:"metadata,omitempty"`
+	Betas         []string               `json:"betas,omitempty"`
+}
+
+// ServerToolDefinition describes a provider-executed tool exposed by the
+// Messages API. Only the web-search variant is currently supported.
+type ServerToolDefinition struct {
+	Type           string   `json:"type"`
+	Name           string   `json:"name"`
+	MaxUses        int      `json:"max_uses,omitempty"`
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
+}
+
+const ServerToolWebSearch20250305 = "web_search_20250305"
+
+// ToolChoice constrains the model's tool selection for a Messages API call.
+type ToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 // WithDefaults returns a copy of the request with API-boundary defaults applied.

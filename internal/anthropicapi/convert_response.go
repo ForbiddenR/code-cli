@@ -53,37 +53,47 @@ func normalizeContentBlock(raw string, fallback any) (core.ContentBlock, error) 
 	}
 
 	var wire struct {
-		Type         core.ContentBlockType `json:"type"`
-		Text         string                `json:"text"`
-		Thinking     string                `json:"thinking"`
-		Data         string                `json:"data"`
-		ID           string                `json:"id"`
-		Name         string                `json:"name"`
-		Input        json.RawMessage       `json:"input"`
-		ToolUseID    string                `json:"tool_use_id"`
-		Content      json.RawMessage       `json:"content"`
-		IsError      bool                  `json:"is_error"`
-		Source       *core.ContentSource   `json:"source"`
-		CacheControl *core.CacheControl    `json:"cache_control"`
-		Signature    string                `json:"signature"`
+		Type             core.ContentBlockType `json:"type"`
+		Text             string                `json:"text"`
+		Thinking         string                `json:"thinking"`
+		Data             string                `json:"data"`
+		ID               string                `json:"id"`
+		Name             string                `json:"name"`
+		Input            json.RawMessage       `json:"input"`
+		ToolUseID        string                `json:"tool_use_id"`
+		Content          json.RawMessage       `json:"content"`
+		IsError          bool                  `json:"is_error"`
+		Source           *core.ContentSource   `json:"source"`
+		CacheControl     *core.CacheControl    `json:"cache_control"`
+		Signature        string                `json:"signature"`
+		Title            string                `json:"title"`
+		URL              string                `json:"url"`
+		PageAge          string                `json:"page_age"`
+		EncryptedContent string                `json:"encrypted_content"`
+		ErrorCode        string                `json:"error_code"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return core.ContentBlock{}, err
 	}
 
 	block := core.ContentBlock{
-		Type:         wire.Type,
-		Text:         wire.Text,
-		Thinking:     wire.Thinking,
-		Data:         wire.Data,
-		ID:           wire.ID,
-		Name:         wire.Name,
-		Input:        wire.Input,
-		ToolUseID:    wire.ToolUseID,
-		IsError:      wire.IsError,
-		Source:       wire.Source,
-		CacheControl: wire.CacheControl,
-		Signature:    wire.Signature,
+		Type:             wire.Type,
+		Text:             wire.Text,
+		Thinking:         wire.Thinking,
+		Data:             wire.Data,
+		ID:               wire.ID,
+		Name:             wire.Name,
+		Input:            wire.Input,
+		ToolUseID:        wire.ToolUseID,
+		IsError:          wire.IsError,
+		Source:           wire.Source,
+		CacheControl:     wire.CacheControl,
+		Signature:        wire.Signature,
+		Title:            wire.Title,
+		URL:              wire.URL,
+		PageAge:          wire.PageAge,
+		EncryptedContent: wire.EncryptedContent,
+		ErrorCode:        wire.ErrorCode,
 	}
 
 	if len(wire.Content) > 0 && string(wire.Content) != "null" {
@@ -92,6 +102,14 @@ func normalizeContentBlock(raw string, fallback any) (core.ContentBlock, error) 
 			return core.ContentBlock{}, err
 		}
 		block.Content = content
+		if block.Type == core.ContentBlockWebSearchToolResult && block.ErrorCode == "" {
+			var errorContent struct {
+				ErrorCode string `json:"error_code"`
+			}
+			if err := json.Unmarshal(wire.Content, &errorContent); err == nil {
+				block.ErrorCode = errorContent.ErrorCode
+			}
+		}
 	}
 
 	return block, nil

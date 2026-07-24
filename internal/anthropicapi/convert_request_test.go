@@ -3,6 +3,7 @@ package anthropicapi
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,53 @@ func TestNewMessageParamsPreservesRequestShape(t *testing.T) {
 	assertJSONPath(t, got, "output_config.effort", "high")
 	assertJSONPath(t, got, "stop_sequences.0", "STOP")
 	assertJSONPath(t, got, "metadata.user_id", "user-123")
+}
+
+func TestNewMessageParamsSupportsWebSearchServerTool(t *testing.T) {
+	params, err := newMessageParams(MessageRequest{
+		Model:     core.ModelClaudeOpus48,
+		MaxTokens: 256,
+		Messages:  []core.Message{core.UserMessage("search")},
+		ServerTools: []ServerToolDefinition{{
+			Type:           ServerToolWebSearch20250305,
+			Name:           "web_search",
+			MaxUses:        8,
+			AllowedDomains: []string{"go.dev"},
+		}},
+		ToolChoice: &ToolChoice{Type: "tool", Name: "web_search"},
+	})
+	if err != nil {
+		t.Fatalf("newMessageParams() error = %v", err)
+	}
+
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal params JSON: %v", err)
+	}
+
+	assertJSONPath(t, got, "tools.0.type", ServerToolWebSearch20250305)
+	assertJSONPath(t, got, "tools.0.name", "web_search")
+	assertJSONPath(t, got, "tools.0.max_uses", float64(8))
+	assertJSONPath(t, got, "tools.0.allowed_domains.0", "go.dev")
+	assertJSONPath(t, got, "tool_choice.type", "tool")
+	assertJSONPath(t, got, "tool_choice.name", "web_search")
+}
+
+func TestNewMessageParamsRejectsUnsupportedServerTool(t *testing.T) {
+	_, err := newMessageParams(MessageRequest{
+		Messages: []core.Message{core.UserMessage("search")},
+		ServerTools: []ServerToolDefinition{{
+			Type: "unsupported",
+			Name: "unknown",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported server tool type") {
+		t.Fatalf("newMessageParams() error = %v", err)
+	}
 }
 
 func TestNewTokenCountParamsUsesDefaultModel(t *testing.T) {

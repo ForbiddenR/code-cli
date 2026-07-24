@@ -10,7 +10,10 @@ Code query flow corresponding to `queryModelWithStreaming` in
   API configuration contracts
 - `internal/anthropicapi` — official Anthropic SDK integration for model
   requests, streaming events, response conversion, token counting, retries,
-  and API error normalization
+  API error normalization, server-side web-search tools, and forced tool choice
+- `internal/websearchtool` — focused server-side WebSearchTool implementation
+  with input validation, provider/model enablement, streaming progress,
+  structured result conversion, and tool-result formatting
 
 The retained streaming path covers the API-facing responsibilities of
 `queryModelWithStreaming`:
@@ -23,9 +26,14 @@ The retained streaming path covers the API-facing responsibilities of
    delivered stream
 5. expose normalized API errors and usage, including prompt-cache accounting
 
-UI rendering, tool orchestration, permissions, session transport, OAuth,
-control-plane endpoints, Files API behavior, telemetry, and repository helpers
-are intentionally excluded from this reduced module.
+The WebSearchTool package intentionally stops at the pure tool boundary: Ink
+rendering, permission persistence, GrowthBook feature flags, full provider state,
+REPL registration, telemetry, live web-search calls, and broader tool
+orchestration remain outside this reduced module.
+
+Other UI rendering, permissions, session transport, OAuth, control-plane
+endpoints, Files API behavior, telemetry, and repository helpers are
+intentionally excluded from this reduced module.
 
 ## Development
 
