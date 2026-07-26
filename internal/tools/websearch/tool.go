@@ -1,6 +1,6 @@
-// Package websearchtool implements the server-side WebSearchTool used by the
+// Package websearch implements the server-side WebSearchTool used by the
 // Claude Code query streaming path.
-package websearchtool
+package websearch
 
 import (
 	"bytes"
