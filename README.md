@@ -25,6 +25,9 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools/grep` — local ripgrep-backed `Grep` tool with strict semantic
   input parsing, deterministic non-shell argument construction, bounded and
   cancellable execution, structured result modes, sorting, and pagination
+- `internal/tools/bash` — focused local `Bash` boundary for bounded foreground
+  shell execution, timeout and cancellation handling, process-tree cleanup,
+  structured results, and model-facing error mapping
 
 The retained streaming path covers the API-facing responsibilities of
 `queryModelWithStreaming`:
@@ -64,6 +67,28 @@ Tests use fake runners and temporary files, so they do not require ripgrep.
 Vendored or embedded ripgrep selection, code signing, availability telemetry,
 permission rules and UI, plugin-cache exclusions, tool-registry integration,
 and generic oversized-result persistence are not implemented.
+
+**Security warning:** calling the `bash` package executes arbitrary shell code
+with the privileges and snapshotted environment of the hosting process. The
+package does not authorize or sandbox commands. Hosts must apply their own
+policy and obtain any required user confirmation before invoking it.
+
+The `bash` package strictly accepts `command`, optional `timeout`, and optional
+`description`. Each foreground call starts from immutable absolute working
+directory and environment snapshots, runs through `bash -c` by default without
+login-profile initialization, captures bounded combined stdout/stderr, and
+terminates the process group on timeout or cancellation where the platform
+supports it. Shell-local cwd changes, variables, aliases, and functions do not
+persist between calls. Exit code 1 retains Claude Code's non-error meanings for
+`grep`/`rg`, `find`, `diff`, `test`, and `[`. Nonzero failures still return their
+captured structured output alongside an error.
+
+The package intentionally excludes permission prompts and persistence,
+command-authorization policy, sandboxing and sandbox bypass,
+`run_in_background`, background task/output registries, progress/UI rendering,
+persistent cwd or shell sessions, profile/environment snapshot generation,
+generic output-file persistence, PTY or interactive stdin forwarding, tool
+registry/query-loop integration, telemetry, and feature flags.
 
 Full permission UI, CLI registration, session-global storage, proxy/mTLS
 application wiring, generic oversized-result persistence, concrete Brief UI and
