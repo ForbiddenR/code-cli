@@ -3,11 +3,14 @@ package anthropicapi
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"code-cli/internal/core"
+	"code-cli/internal/systemprompt"
 )
 
 func TestNewMessageParamsPreservesRequestShape(t *testing.T) {
@@ -67,6 +70,48 @@ func TestNewMessageParamsPreservesRequestShape(t *testing.T) {
 	assertJSONPath(t, got, "output_config.effort", "high")
 	assertJSONPath(t, got, "stop_sequences.0", "STOP")
 	assertJSONPath(t, got, "metadata.user_id", "user-123")
+}
+
+func TestNewMessageParamsPreservesSystemPromptBlockBoundary(t *testing.T) {
+	workingDirectory, err := filepath.Abs(filepath.Join(os.TempDir(), "code-cli-systemprompt", "project"))
+	if err != nil {
+		t.Fatalf("resolve working directory: %v", err)
+	}
+	system, err := systemprompt.Build(systemprompt.Options{
+		Environment: systemprompt.Environment{
+			WorkingDirectory: workingDirectory,
+			Platform:         "linux",
+			Model:            core.ModelClaudeOpus48,
+		},
+		EnablePromptCaching: true,
+	})
+	if err != nil {
+		t.Fatalf("systemprompt.Build() error = %v", err)
+	}
+	params, err := newMessageParams(MessageRequest{
+		System:   system,
+		Messages: []core.Message{core.UserMessage("hello")},
+	})
+	if err != nil {
+		t.Fatalf("newMessageParams() error = %v", err)
+	}
+
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal params JSON: %v", err)
+	}
+
+	assertJSONPath(t, got, "system.0.text", system[0].Text)
+	assertJSONPath(t, got, "system.0.cache_control.type", "ephemeral")
+	assertJSONPath(t, got, "system.1.text", system[1].Text)
+	systemBlocks := got["system"].([]any)
+	if _, exists := systemBlocks[1].(map[string]any)["cache_control"]; exists {
+		t.Fatalf("dynamic system block unexpectedly contains cache_control: %#v", systemBlocks[1])
+	}
 }
 
 func TestNewMessageParamsSupportsWebSearchServerTool(t *testing.T) {

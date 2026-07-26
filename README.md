@@ -8,6 +8,9 @@ Code query flow corresponding to `queryModelWithStreaming` in
 
 - `internal/core` — normalized message, content, model, usage, retry, error, and
   API configuration contracts
+- `internal/systemprompt` — deterministic retained coding-agent prompt builder
+  with tool-sensitive policy, explicit environment context, bounded Skill summaries,
+  and a stable/dynamic prompt-cache boundary
 - `internal/anthropicapi` — official Anthropic SDK integration for model
   requests, streaming events, response conversion, token counting, retries,
   API error normalization, server-side web-search tools, and forced tool choice
@@ -123,6 +126,23 @@ checks, or grant filesystem or shell access. Automatic user/project discovery,
 legacy commands, bundled/plugin/MCP/remote skills, dynamic path activation,
 hooks, inline shell execution, forked agents, session/compaction state,
 telemetry, and query-loop application are intentionally excluded.
+
+The `systemprompt` package builds API-ready `[]core.SystemBlock` values from
+explicit host inputs. A host supplies observed environment facts together with
+`registry.EnabledDefinitions()` and `registry.Skills()`, then assigns the result
+to `anthropicapi.MessageRequest.System`. The builder performs no filesystem,
+Git, clock, process-environment, or network discovery. Its first block contains
+stable coding and retained-tool policy; its second contains dynamic environment
+and available-Skill context. When prompt caching is enabled, only the stable
+block receives ephemeral cache control.
+
+Skill names and descriptions rendered by `systemprompt` are bounded and sorted,
+but remain trusted prompt content loaded from configured roots. The prompt layer
+does not grant permissions or authorize execution. Custom, appended, overridden,
+coordinator, and agent prompt composition; `CLAUDE.md` and memory discovery;
+current-date and Git collection; language and output-style settings; permissions
+UI; hooks; MCP; scratchpads; session globals; feature flags; telemetry; and
+global or organization cache scopes are intentionally excluded.
 
 **Security warning:** calling the `bash` package executes arbitrary shell code
 with the privileges and snapshotted environment of the hosting process. The
