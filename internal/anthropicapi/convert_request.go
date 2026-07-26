@@ -261,6 +261,9 @@ func sdkToolParam(tool core.ToolDefinition) (anthropic.ToolParam, error) {
 	if tool.Description != "" {
 		toolParam.Description = param.NewOpt(tool.Description)
 	}
+	if tool.Strict {
+		toolParam.Strict = param.NewOpt(true)
+	}
 	return toolParam, nil
 }
 

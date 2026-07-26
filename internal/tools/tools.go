@@ -19,6 +19,7 @@ import (
 
 var (
 	ErrToolNotFound  = errors.New("tool not found")
+	ErrToolDisabled  = errors.New("tool disabled")
 	ErrInvalidInput  = errors.New("invalid tool input")
 	ErrToolExecution = errors.New("tool execution failed")
 )
@@ -30,6 +31,8 @@ type Config struct {
 	Brief     brief.Config
 	WebFetch  webfetch.Config
 	WebSearch websearch.Config
+	Provider  string
+	Model     core.ModelID
 	Now       func() time.Time // Overrides the shared WebSearch definition and execution clock.
 }
 
@@ -59,44 +62,6 @@ type ExecutionResult struct {
 	ToolResult    core.ContentBlock
 }
 
-type executeFunc func(context.Context, json.RawMessage, ExecuteOptions) (ExecutionResult, error)
-
-// Tool is one immutable concrete registry entry.
-type Tool struct {
-	definition core.ToolDefinition
-	aliases    []string
-	execute    executeFunc
-}
-
-// Name returns the canonical model-facing tool name.
-func (tool Tool) Name() string {
-	return tool.definition.Name
-}
-
-// Definition returns a defensive copy of the model-facing declaration.
-func (tool Tool) Definition() core.ToolDefinition {
-	return cloneDefinition(tool.definition)
-}
-
-// Aliases returns accepted compatibility names that are not separately advertised.
-func (tool Tool) Aliases() []string {
-	return append([]string(nil), tool.aliases...)
-}
-
-// Execute strictly parses and invokes this concrete tool.
-func (tool Tool) Execute(ctx context.Context, input json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-	if tool.execute == nil {
-		return ExecutionResult{}, fmt.Errorf("%w: tool %q has no executor", ErrToolExecution, tool.Name())
-	}
-	if ctx == nil {
-		return ExecutionResult{}, fmt.Errorf("%w for %s: context is nil", ErrToolExecution, tool.Name())
-	}
-	if strings.TrimSpace(options.ToolUseID) == "" {
-		return ExecutionResult{}, fmt.Errorf("%w for %s: tool-use ID is empty", ErrInvalidInput, tool.Name())
-	}
-	return tool.execute(ctx, input, options)
-}
-
 // Registry is an immutable collection of the retained concrete tools.
 type Registry struct {
 	entries []Tool
@@ -122,11 +87,20 @@ func NewRegistry(config Config) (*Registry, error) {
 	}
 	config.WebSearch.Now = now
 	webSearchTool := websearch.New(config.WebSearch)
+	provider := config.Provider
+	if provider == "" {
+		provider = "firstParty"
+	}
+	model := config.Model
+	if model == "" {
+		model = core.DefaultModel
+	}
+	webSearchEnabled := websearch.IsEnabled(provider, model)
 	entries := []Tool{
 		newBashEntry(bashTool),
 		newGrepEntry(grepTool),
 		newWebFetchEntry(webFetchTool),
-		newWebSearchEntry(webSearchTool, websearch.Definition(now())),
+		newWebSearchEntry(webSearchTool, websearch.Definition(now()), webSearchEnabled),
 		newBriefEntry(briefTool),
 	}
 	return buildRegistry(entries)
@@ -144,6 +118,20 @@ func (registry *Registry) All() []Tool {
 	return result
 }
 
+// Enabled returns enabled concrete entries in stable model-facing order.
+func (registry *Registry) Enabled() []Tool {
+	if registry == nil {
+		return nil
+	}
+	result := make([]Tool, 0, len(registry.entries))
+	for _, entry := range registry.entries {
+		if entry.IsEnabled() {
+			result = append(result, cloneTool(entry))
+		}
+	}
+	return result
+}
+
 // Definitions returns every canonical custom-tool definition in stable order.
 func (registry *Registry) Definitions() []core.ToolDefinition {
 	if registry == nil {
@@ -152,6 +140,20 @@ func (registry *Registry) Definitions() []core.ToolDefinition {
 	result := make([]core.ToolDefinition, len(registry.entries))
 	for index, entry := range registry.entries {
 		result[index] = cloneDefinition(entry.definition)
+	}
+	return result
+}
+
+// EnabledDefinitions returns enabled canonical definitions in stable order.
+func (registry *Registry) EnabledDefinitions() []core.ToolDefinition {
+	if registry == nil {
+		return nil
+	}
+	result := make([]core.ToolDefinition, 0, len(registry.entries))
+	for _, entry := range registry.entries {
+		if entry.IsEnabled() {
+			result = append(result, cloneDefinition(entry.definition))
+		}
 	}
 	return result
 }
@@ -174,6 +176,9 @@ func (registry *Registry) Execute(ctx context.Context, name string, input json.R
 	if !ok {
 		return ExecutionResult{}, fmt.Errorf("%w: %q", ErrToolNotFound, name)
 	}
+	if !tool.IsEnabled() {
+		return ExecutionResult{}, fmt.Errorf("%w: %q", ErrToolDisabled, name)
+	}
 	return tool.Execute(ctx, input, options)
 }
 
@@ -195,6 +200,12 @@ func buildRegistry(entries []Tool) (*Registry, error) {
 		if entry.execute == nil {
 			return nil, fmt.Errorf("tool %q has no executor", name)
 		}
+		if entry.classify == nil {
+			return nil, fmt.Errorf("tool %q has no classifier", name)
+		}
+		if entry.maxResultSizeChars <= 0 {
+			return nil, fmt.Errorf("tool %q has invalid maximum result size", name)
+		}
 		for _, candidate := range append([]string{name}, entry.aliases...) {
 			if strings.TrimSpace(candidate) == "" {
 				return nil, fmt.Errorf("tool %q has an empty alias", name)
@@ -212,95 +223,134 @@ func buildRegistry(entries []Tool) (*Registry, error) {
 
 func newBashEntry(tool *bash.Tool) Tool {
 	definition := bash.Definition()
-	return Tool{definition: definition, execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-		input, err := bash.ParseInput(raw)
-		if err != nil {
-			return ExecutionResult{}, invalidInputError(definition.Name, err)
-		}
-		output, callErr := tool.Call(ctx, input)
-		mapped := bash.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
-		result := normalizedResult(definition.Name, output, mapped.Content, mapped.IsError, options.ToolUseID)
-		if callErr != nil {
-			return result, executionError(definition.Name, callErr)
-		}
-		return result, nil
-	}}
+	definition.Strict = true
+	return buildTool(toolSpec{
+		definition:         definition,
+		maxResultSizeChars: 30_000,
+		classify: classifyWith(definition.Name, bash.ParseInput, func(bash.Input) InputClassification {
+			return InputClassification{}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := bash.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
+			}
+			output, callErr := tool.Call(ctx, input)
+			mapped := bash.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
+			result := normalizedResult(definition.Name, output, mapped.Content, mapped.IsError, options.ToolUseID)
+			if callErr != nil {
+				return result, executionError(definition.Name, callErr)
+			}
+			return result, nil
+		},
+	})
 }
 
 func newGrepEntry(tool *grep.Tool) Tool {
 	definition := grep.Definition()
-	return Tool{definition: definition, execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-		input, err := grep.ParseInput(raw)
-		if err != nil {
-			return ExecutionResult{}, invalidInputError(definition.Name, err)
-		}
-		output, callErr := tool.Call(ctx, input)
-		if callErr != nil {
-			return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
-		}
-		mapped := grep.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
-		return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
-	}}
+	definition.Strict = true
+	return buildTool(toolSpec{
+		definition:         definition,
+		maxResultSizeChars: 20_000,
+		classify: classifyWith(definition.Name, grep.ParseInput, func(grep.Input) InputClassification {
+			return InputClassification{ConcurrencySafe: true, ReadOnly: true}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := grep.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
+			}
+			output, callErr := tool.Call(ctx, input)
+			if callErr != nil {
+				return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
+			}
+			mapped := grep.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
+			return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
+		},
+	})
 }
 
 func newWebFetchEntry(tool *webfetch.WebFetchTool) Tool {
 	definition := webfetch.Definition()
-	return Tool{definition: definition, execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-		input, err := webfetch.ParseInput(raw)
-		if err != nil {
-			return ExecutionResult{}, invalidInputError(definition.Name, err)
-		}
-		output, callErr := tool.Call(ctx, input)
-		if callErr != nil {
-			return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
-		}
-		mapped := webfetch.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
-		return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
-	}}
+	return buildTool(toolSpec{
+		definition:         definition,
+		maxResultSizeChars: 100_000,
+		classify: classifyWith(definition.Name, webfetch.ParseInput, func(webfetch.Input) InputClassification {
+			return InputClassification{ConcurrencySafe: true, ReadOnly: true}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := webfetch.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
+			}
+			output, callErr := tool.Call(ctx, input)
+			if callErr != nil {
+				return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
+			}
+			mapped := webfetch.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
+			return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
+		},
+	})
 }
 
-func newWebSearchEntry(tool *websearch.WebSearchTool, definition core.ToolDefinition) Tool {
-	return Tool{definition: definition, execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-		input, err := websearch.ParseInput(raw)
-		if err != nil {
-			return ExecutionResult{}, invalidInputError(definition.Name, err)
-		}
-		var progress websearch.ProgressFunc
-		if options.Progress != nil {
-			progress = func(event websearch.ProgressEvent) {
-				options.Progress(ProgressEvent{
-					ToolName:    definition.Name,
-					ToolUseID:   options.ToolUseID,
-					OperationID: event.ToolUseID,
-					Type:        string(event.Type),
-					Query:       event.Query,
-					ResultCount: event.ResultCount,
-				})
+func newWebSearchEntry(tool *websearch.WebSearchTool, definition core.ToolDefinition, enabled bool) Tool {
+	return buildTool(toolSpec{
+		definition:         definition,
+		maxResultSizeChars: 100_000,
+		enabled:            func() bool { return enabled },
+		classify: classifyWith(definition.Name, websearch.ParseInput, func(websearch.Input) InputClassification {
+			return InputClassification{ConcurrencySafe: true, ReadOnly: true}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := websearch.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
 			}
-		}
-		output, callErr := tool.Call(ctx, input, progress)
-		if callErr != nil {
-			return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
-		}
-		mapped := websearch.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
-		return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
-	}}
+			var progress websearch.ProgressFunc
+			if options.Progress != nil {
+				progress = func(event websearch.ProgressEvent) {
+					options.Progress(ProgressEvent{
+						ToolName:    definition.Name,
+						ToolUseID:   options.ToolUseID,
+						OperationID: event.ToolUseID,
+						Type:        string(event.Type),
+						Query:       event.Query,
+						ResultCount: event.ResultCount,
+					})
+				}
+			}
+			output, callErr := tool.Call(ctx, input, progress)
+			if callErr != nil {
+				return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
+			}
+			mapped := websearch.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
+			return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
+		},
+	})
 }
 
 func newBriefEntry(tool *brief.Tool) Tool {
 	definition := brief.Definition()
-	return Tool{definition: definition, aliases: brief.Aliases(), execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
-		input, err := brief.ParseInput(raw)
-		if err != nil {
-			return ExecutionResult{}, invalidInputError(definition.Name, err)
-		}
-		output, callErr := tool.Call(ctx, input)
-		if callErr != nil {
-			return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
-		}
-		mapped := brief.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
-		return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
-	}}
+	return buildTool(toolSpec{
+		definition:         definition,
+		aliases:            brief.Aliases(),
+		maxResultSizeChars: 100_000,
+		classify: classifyWith(definition.Name, brief.ParseInput, func(brief.Input) InputClassification {
+			return InputClassification{ConcurrencySafe: true, ReadOnly: true}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := brief.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
+			}
+			output, callErr := tool.Call(ctx, input)
+			if callErr != nil {
+				return failedResult(definition.Name, output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
+			}
+			mapped := brief.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
+			return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
+		},
+	})
 }
 
 func normalizedResult(name string, output any, content string, isError bool, toolUseID string) ExecutionResult {
@@ -321,17 +371,4 @@ func invalidInputError(name string, err error) error {
 
 func executionError(name string, err error) error {
 	return fmt.Errorf("%w for %s: %w", ErrToolExecution, name, err)
-}
-
-func cloneTool(tool Tool) Tool {
-	return Tool{
-		definition: cloneDefinition(tool.definition),
-		aliases:    append([]string(nil), tool.aliases...),
-		execute:    tool.execute,
-	}
-}
-
-func cloneDefinition(definition core.ToolDefinition) core.ToolDefinition {
-	definition.InputSchema = append(json.RawMessage(nil), definition.InputSchema...)
-	return definition
 }

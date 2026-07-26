@@ -35,6 +35,7 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	Strict      bool            `json:"strict,omitempty"`
 }
 
 // ThinkingType identifies the thinking configuration mode.

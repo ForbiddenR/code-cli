@@ -36,8 +36,23 @@ The concrete registry exposes a stable five-tool order, defensive definition
 copies, exact case-sensitive canonical and alias lookup, strict raw JSON
 execution, typed host outputs, and normalized `core.ContentBlock` tool results.
 `Brief` resolves to `SendUserMessage` but is not advertised as a separate model
-definition. Registry definitions are exhaustive; callers remain responsible for
-provider/model policy such as `websearch.IsEnabled`.
+definition. `All`, `Definitions`, and `Lookup` are exhaustive, while `Enabled`
+and `EnabledDefinitions` apply registry policy. WebSearch reuses
+`websearch.IsEnabled` with the configured provider and model; an omitted policy
+defaults to first-party and the core default model.
+
+Each registry entry also exposes the retained non-UI portions of the shared
+Claude Code tool contract: enabled state, strict parser-backed input
+classification, and the TypeScript-compatible model-result size limit. Bash is
+classified conservatively as neither concurrency-safe nor read-only; Grep,
+WebFetch, WebSearch, and SendUserMessage are concurrency-safe and read-only.
+These values are scheduling and descriptive metadata only. They do not grant
+permission, authorize shell commands, or provide sandboxing.
+
+Bash and Grep advertise the Anthropic custom-tool top-level `strict: true`
+metadata. This API field is distinct from local strict JSON parsing and from
+`input_schema.additionalProperties: false`; the remaining three definitions
+retain closed schemas without advertising top-level strict mode.
 
 `WebSearch` is a locally dispatched outer tool that internally declares
 Anthropic's hosted `web_search` server tool. The hosted declaration remains

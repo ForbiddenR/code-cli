@@ -26,7 +26,7 @@ func TestNewMessageParamsPreservesRequestShape(t *testing.T) {
 			},
 		},
 		Tools: []core.ToolDefinition{
-			{Name: "weather", Description: "Get weather.", InputSchema: schema},
+			{Name: "weather", Description: "Get weather.", InputSchema: schema, Strict: true},
 		},
 		Thinking:      new(core.DefaultThinking()),
 		OutputConfig:  &core.OutputConfig{Effort: core.EffortHigh},
@@ -62,6 +62,7 @@ func TestNewMessageParamsPreservesRequestShape(t *testing.T) {
 	assertJSONPath(t, got, "tools.0.name", "weather")
 	assertJSONPath(t, got, "tools.0.description", "Get weather.")
 	assertJSONPath(t, got, "tools.0.input_schema.properties.city.type", "string")
+	assertJSONPath(t, got, "tools.0.strict", true)
 	assertJSONPath(t, got, "thinking.type", "adaptive")
 	assertJSONPath(t, got, "output_config.effort", "high")
 	assertJSONPath(t, got, "stop_sequences.0", "STOP")
@@ -124,6 +125,34 @@ func TestNewTokenCountParamsUsesDefaultModel(t *testing.T) {
 	}
 	if params.Model != "claude-opus-4-8" {
 		t.Fatalf("default model = %q", params.Model)
+	}
+}
+
+func TestNewTokenCountParamsPreservesOptionalToolStrictness(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	params, err := newTokenCountParams(TokenCountRequest{
+		Messages: []core.Message{core.UserMessage("count tools")},
+		Tools: []core.ToolDefinition{
+			{Name: "strict_tool", InputSchema: schema, Strict: true},
+			{Name: "ordinary_tool", InputSchema: schema},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newTokenCountParams() error = %v", err)
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONPath(t, got, "tools.0.strict", true)
+	tools := got["tools"].([]any)
+	ordinary := tools[1].(map[string]any)
+	if _, exists := ordinary["strict"]; exists {
+		t.Fatalf("ordinary tool unexpectedly contains strict: %#v", ordinary)
 	}
 }
 

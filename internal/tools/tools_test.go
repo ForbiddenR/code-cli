@@ -101,6 +101,102 @@ func TestRegistryEnumeratesAndLooksUpConcreteTools(t *testing.T) {
 	}
 }
 
+func TestRegistryToolMetadataAndClassification(t *testing.T) {
+	registry := newTestRegistry(t, newRegistryStream())
+	tests := []struct {
+		name           string
+		input          json.RawMessage
+		maxResultChars int
+		strict         bool
+		classification InputClassification
+	}{
+		{name: "Bash", input: json.RawMessage(`{"command":"printf ok"}`), maxResultChars: 30_000, strict: true},
+		{name: "Grep", input: json.RawMessage(`{"pattern":"ok"}`), maxResultChars: 20_000, strict: true, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
+		{name: "WebFetch", input: json.RawMessage(`{"url":"https://example.com","prompt":"read"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
+		{name: "WebSearch", input: json.RawMessage(`{"query":"current Go"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
+		{name: "SendUserMessage", input: json.RawMessage(`{"message":"done","status":"normal"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tool, ok := registry.Lookup(test.name)
+			if !ok {
+				t.Fatal("tool not found")
+			}
+			definition := tool.Definition()
+			if !tool.IsEnabled() || tool.MaxResultSizeChars() != test.maxResultChars || definition.Strict != test.strict {
+				t.Fatalf("enabled = %t, max = %d, definition = %#v", tool.IsEnabled(), tool.MaxResultSizeChars(), definition)
+			}
+			classification, err := tool.ClassifyInput(test.input)
+			if err != nil || classification != test.classification {
+				t.Fatalf("classification = %#v, error = %v", classification, err)
+			}
+			if _, err := tool.ClassifyInput(json.RawMessage(`{"unexpected":true}`)); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("invalid classification error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRegistryEnabledViewsAndDisabledDispatch(t *testing.T) {
+	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
+		config.Provider = "bedrock"
+	})
+	if len(registry.All()) != 5 || len(registry.Definitions()) != 5 {
+		t.Fatalf("exhaustive entries = %d, definitions = %d", len(registry.All()), len(registry.Definitions()))
+	}
+	wantEnabled := []string{"Bash", "Grep", "WebFetch", "SendUserMessage"}
+	enabled := registry.Enabled()
+	definitions := registry.EnabledDefinitions()
+	if len(enabled) != len(wantEnabled) || len(definitions) != len(wantEnabled) {
+		t.Fatalf("enabled entries = %d, definitions = %d", len(enabled), len(definitions))
+	}
+	for index, name := range wantEnabled {
+		if enabled[index].Name() != name || definitions[index].Name != name {
+			t.Fatalf("enabled %d = %q, definition = %q", index, enabled[index].Name(), definitions[index].Name)
+		}
+	}
+	search, ok := registry.Lookup("WebSearch")
+	if !ok || search.IsEnabled() {
+		t.Fatalf("disabled WebSearch = %#v, found = %t", search, ok)
+	}
+	if _, err := registry.Execute(context.Background(), "WebSearch", json.RawMessage(`not-json`), ExecuteOptions{}); !errors.Is(err, ErrToolDisabled) {
+		t.Fatalf("disabled WebSearch error = %v", err)
+	}
+
+	executed := false
+	disabled := buildTool(toolSpec{
+		definition:         core.ToolDefinition{Name: "SendUserMessage", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		aliases:            []string{"Brief"},
+		enabled:            func() bool { return false },
+		maxResultSizeChars: 1,
+		classify: func(json.RawMessage) (InputClassification, error) {
+			return InputClassification{}, errors.New("classifier must not run")
+		},
+		execute: func(context.Context, json.RawMessage, ExecuteOptions) (ExecutionResult, error) {
+			executed = true
+			return ExecutionResult{}, nil
+		},
+	})
+	disabledRegistry, err := buildRegistry([]Tool{disabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"SendUserMessage", "Brief"} {
+		if _, err := disabledRegistry.Execute(context.Background(), name, json.RawMessage(`not-json`), ExecuteOptions{}); !errors.Is(err, ErrToolDisabled) {
+			t.Fatalf("disabled %s error = %v", name, err)
+		}
+	}
+	if executed {
+		t.Fatal("disabled tool executed")
+	}
+
+	var nilRegistry *Registry
+	if nilRegistry.Enabled() != nil || nilRegistry.EnabledDefinitions() != nil {
+		t.Fatal("nil registry enabled views were not safe")
+	}
+}
+
 func TestRegistryDispatchesEveryConcreteTool(t *testing.T) {
 	searchStream := newRegistryStream(
 		anthropicapi.StreamEvent{
@@ -237,9 +333,12 @@ func TestRegistryConstructionValidation(t *testing.T) {
 	execute := func(context.Context, json.RawMessage, ExecuteOptions) (ExecutionResult, error) {
 		return ExecutionResult{}, nil
 	}
+	classify := func(json.RawMessage) (InputClassification, error) {
+		return InputClassification{}, nil
+	}
 	_, err = buildRegistry([]Tool{
-		{definition: core.ToolDefinition{Name: "One", InputSchema: json.RawMessage(`{"type":"object"}`)}, aliases: []string{"shared"}, execute: execute},
-		{definition: core.ToolDefinition{Name: "Two", InputSchema: json.RawMessage(`{"type":"object"}`)}, aliases: []string{"shared"}, execute: execute},
+		{definition: core.ToolDefinition{Name: "One", InputSchema: json.RawMessage(`{"type":"object"}`)}, aliases: []string{"shared"}, execute: execute, classify: classify, maxResultSizeChars: 1},
+		{definition: core.ToolDefinition{Name: "Two", InputSchema: json.RawMessage(`{"type":"object"}`)}, aliases: []string{"shared"}, execute: execute, classify: classify, maxResultSizeChars: 1},
 	})
 	if err == nil || !strings.Contains(err.Error(), "collides") {
 		t.Fatalf("collision error = %v", err)
@@ -247,6 +346,11 @@ func TestRegistryConstructionValidation(t *testing.T) {
 }
 
 func newTestRegistry(t *testing.T, stream anthropicapi.Stream) *Registry {
+	t.Helper()
+	return newTestRegistryWithConfig(t, stream, nil)
+}
+
+func newTestRegistryWithConfig(t *testing.T, stream anthropicapi.Stream, configure func(*Config)) *Registry {
 	t.Helper()
 	directory := t.TempDir()
 	grepRunner := grep.RunnerFunc(func(_ context.Context, _ string, args []string, _ int) (grep.ProcessResult, error) {
@@ -270,7 +374,7 @@ func newTestRegistry(t *testing.T, stream anthropicapi.Stream) *Registry {
 		}, nil
 	})
 	fixed := time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC)
-	registry, err := NewRegistry(Config{
+	config := Config{
 		Bash: bash.Config{WorkingDirectory: directory, Runner: bashRunner, Now: func() time.Time { return fixed }},
 		Grep: grep.Config{Runner: grepRunner},
 		WebFetch: webfetch.Config{
@@ -282,7 +386,11 @@ func newTestRegistry(t *testing.T, stream anthropicapi.Stream) *Registry {
 			Client: &registryClient{stream: stream},
 		},
 		Now: func() time.Time { return fixed },
-	})
+	}
+	if configure != nil {
+		configure(&config)
+	}
+	registry, err := NewRegistry(config)
 	if err != nil {
 		t.Fatal(err)
 	}
