@@ -2,10 +2,12 @@ package webfetch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -368,5 +370,40 @@ func TestDurationClampedAtZero(t *testing.T) {
 	}
 	if got.DurationMs != 0 {
 		t.Fatalf("duration = %d", got.DurationMs)
+	}
+}
+
+func TestDefinitionAndParseInput(t *testing.T) {
+	definition := Definition()
+	if definition.Name != ToolName || definition.Description != ToolPrompt || strings.Contains(definition.Description, "gh CLI") {
+		t.Fatalf("definition = %#v", definition)
+	}
+	var schema struct {
+		Type                 string                     `json:"type"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties bool                       `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Type != "object" || schema.AdditionalProperties || len(schema.Properties) != 2 || !reflect.DeepEqual(schema.Required, []string{"url", "prompt"}) {
+		t.Fatalf("schema = %#v", schema)
+	}
+
+	input, err := ParseInput([]byte(`{"url":"https://example.com/path","prompt":"Summarize"}`))
+	if err != nil || input.URL != "https://example.com/path" || input.Prompt != "Summarize" {
+		t.Fatalf("input = %#v, error = %v", input, err)
+	}
+	for _, value := range []string{
+		``, `null`, `[]`, `{}`, `{"URL":"https://example.com","prompt":"p"}`,
+		`{"url":"https://example.com"}`, `{"url":null,"prompt":"p"}`,
+		`{"url":"not a URL","prompt":"p"}`, `{"url":"https://example.com","prompt":null}`,
+		`{"url":"https://example.com","prompt":"p","extra":true}`,
+		`{"url":"https://example.com","prompt":"p"} {}`,
+	} {
+		if _, err := ParseInput([]byte(value)); err == nil {
+			t.Fatalf("ParseInput(%q) succeeded", value)
+		}
 	}
 }

@@ -160,7 +160,7 @@ func TestContentRelativizesContextWithoutLineNumbers(t *testing.T) {
 	}
 	showLines := false
 	output := buildOutput(
-		Input{Pattern: "x", OutputMode: OutputModeContent, ShowLineNumbers: &showLines, Context: intPointer(1)},
+		Input{Pattern: "x", OutputMode: OutputModeContent, ShowLineNumbers: &showLines, Context: new(1)},
 		file+"-6-context-with-12-number\n"+file+":7:match",
 		directory,
 		false,
@@ -196,7 +196,7 @@ func TestFilesSortingPaginationAndCountOutput(t *testing.T) {
 	if !reflect.DeepEqual(files.Filenames, []string{"a.go", "b.go"}) || files.AppliedLimit == nil || *files.AppliedLimit != 2 {
 		t.Fatalf("files = %#v", files)
 	}
-	count := buildOutput(Input{Pattern: "x", OutputMode: OutputModeCount, Offset: intPointer(1)}, oldFile+":2\n"+newA+":3\n", directory, false, os.Stat)
+	count := buildOutput(Input{Pattern: "x", OutputMode: OutputModeCount, Offset: new(1)}, oldFile+":2\n"+newA+":3\n", directory, false, os.Stat)
 	if count.Content != "a.go:3" || count.NumMatches == nil || *count.NumMatches != 3 || count.NumFiles != 1 || count.AppliedOffset == nil {
 		t.Fatalf("count = %#v", count)
 	}

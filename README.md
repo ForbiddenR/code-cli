@@ -28,6 +28,20 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools/bash` — focused local `Bash` boundary for bounded foreground
   shell execution, timeout and cancellation handling, process-tree cleanup,
   structured results, and model-facing error mapping
+- `internal/tools` — concrete built-in registry and raw JSON dispatch layer for
+  Bash, Grep, WebFetch, WebSearch, and SendUserMessage (with `Brief` as a
+  compatibility alias)
+
+The concrete registry exposes a stable five-tool order, defensive definition
+copies, exact case-sensitive canonical and alias lookup, strict raw JSON
+execution, typed host outputs, and normalized `core.ContentBlock` tool results.
+`Brief` resolves to `SendUserMessage` but is not advertised as a separate model
+definition. Registry definitions are exhaustive; callers remain responsible for
+provider/model policy such as `websearch.IsEnabled`.
+
+`WebSearch` is a locally dispatched outer tool that internally declares
+Anthropic's hosted `web_search` server tool. The hosted declaration remains
+separate and is not registered as another concrete local tool.
 
 The retained streaming path covers the API-facing responsibilities of
 `queryModelWithStreaming`:
@@ -65,8 +79,8 @@ retries resource-exhaustion failures with one worker, bounds captured output,
 and maps content, file-list, and count results into the model-facing format.
 Tests use fake runners and temporary files, so they do not require ripgrep.
 Vendored or embedded ripgrep selection, code signing, availability telemetry,
-permission rules and UI, plugin-cache exclusions, tool-registry integration,
-and generic oversized-result persistence are not implemented.
+permission rules and UI, plugin-cache exclusions, and generic oversized-result
+persistence are not implemented.
 
 **Security warning:** calling the `bash` package executes arbitrary shell code
 with the privileges and snapshotted environment of the hosting process. The
@@ -87,8 +101,8 @@ The package intentionally excludes permission prompts and persistence,
 command-authorization policy, sandboxing and sandbox bypass,
 `run_in_background`, background task/output registries, progress/UI rendering,
 persistent cwd or shell sessions, profile/environment snapshot generation,
-generic output-file persistence, PTY or interactive stdin forwarding, tool
-registry/query-loop integration, telemetry, and feature flags.
+generic output-file persistence, PTY or interactive stdin forwarding,
+query-loop integration, telemetry, and feature flags.
 
 Full permission UI, CLI registration, session-global storage, proxy/mTLS
 application wiring, generic oversized-result persistence, concrete Brief UI and

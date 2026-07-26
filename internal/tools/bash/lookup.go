@@ -62,8 +62,8 @@ func environmentValue(environment []string, name string) string {
 			if len(parts) == 2 && strings.EqualFold(parts[0], name) {
 				return parts[1]
 			}
-		} else if strings.HasPrefix(environment[index], prefix) {
-			return strings.TrimPrefix(environment[index], prefix)
+		} else if after, ok := strings.CutPrefix(environment[index], prefix); ok {
+			return after
 		}
 	}
 	return ""

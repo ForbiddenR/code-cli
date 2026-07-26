@@ -146,20 +146,14 @@ func normalizeOutputLines(stdout string) []string {
 }
 
 func paginate[T any](items []T, offset, limit int) ([]T, *int) {
-	start := offset
-	if start > len(items) {
-		start = len(items)
-	}
+	start := min(offset, len(items))
 	if limit == 0 {
 		return append([]T(nil), items[start:]...), nil
 	}
-	end := start + limit
-	if end > len(items) {
-		end = len(items)
-	}
+	end := min(start+limit, len(items))
 	page := append([]T(nil), items[start:end]...)
 	if len(items)-start > limit {
-		return page, intPointer(limit)
+		return page, new(limit)
 	}
 	return page, nil
 }
@@ -246,11 +240,7 @@ func positivePointer(value int) *int {
 	if value <= 0 {
 		return nil
 	}
-	return intPointer(value)
-}
-
-func intPointer(value int) *int {
-	return &value
+	return new(value)
 }
 
 // MapToolResultToToolResultBlockParam formats structured Grep output for Claude.

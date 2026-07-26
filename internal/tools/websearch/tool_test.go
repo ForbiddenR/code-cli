@@ -2,7 +2,9 @@ package websearch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -302,5 +304,42 @@ func TestExtractQueryHandlesEscapedCharacters(t *testing.T) {
 	got, ok := extractQuery(`{"query":"cats \"and\" dogs"}`)
 	if !ok || got != `cats "and" dogs` {
 		t.Fatalf("extractQuery() = %q, %t", got, ok)
+	}
+}
+
+func TestDefinitionAndParseInput(t *testing.T) {
+	now := time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC)
+	definition := Definition(now)
+	if definition.Name != ToolName || !strings.Contains(definition.Description, "July 2026") {
+		t.Fatalf("definition = %#v", definition)
+	}
+	var schema struct {
+		Type                 string                     `json:"type"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties bool                       `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Type != "object" || schema.AdditionalProperties || len(schema.Properties) != 3 || !reflect.DeepEqual(schema.Required, []string{"query"}) {
+		t.Fatalf("schema = %#v", schema)
+	}
+
+	input, err := ParseInput([]byte(`{"query":"latest Go","allowed_domains":["go.dev"]}`))
+	if err != nil || input.Query != "latest Go" || !reflect.DeepEqual(input.AllowedDomains, []string{"go.dev"}) {
+		t.Fatalf("input = %#v, error = %v", input, err)
+	}
+	for _, value := range []string{
+		``, `null`, `[]`, `{}`, `{"Query":"go"}`, `{"query":null}`,
+		`{"query":"x"}`, `{"query":"go","allowed_domains":null}`,
+		`{"query":"go","allowed_domains":[null]}`,
+		`{"query":"go","allowed_domains":[1]}`,
+		`{"query":"go","allowed_domains":["go.dev"],"blocked_domains":["example.com"]}`,
+		`{"query":"go","extra":true}`, `{"query":"go"} {}`,
+	} {
+		if _, err := ParseInput([]byte(value)); err == nil {
+			t.Fatalf("ParseInput(%q) succeeded", value)
+		}
 	}
 }

@@ -2,13 +2,51 @@ package webfetch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"code-cli/internal/anthropicapi"
 	"code-cli/internal/core"
 )
 
+const ToolPrompt = `Fetches content from a specified URL and processes it using an AI model.
+
+Usage notes:
+- Takes a fully formed URL and a prompt describing what information to extract.
+- HTTP URLs are automatically upgraded to HTTPS.
+- HTML content is converted to Markdown before prompt processing.
+- A small, fast model may summarize or analyze nontrivial content.
+- Results are cached for 15 minutes when the fetched content is reusable.
+- Cross-host redirects are returned as instructions for a follow-up WebFetch call.
+- Authenticated or private URLs are not supported.
+- This tool is read-only and does not modify remote content.`
+
 const preapprovedGuidelines = "Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed."
+
+var inputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "The URL to fetch content from"
+    },
+    "prompt": {
+      "type": "string",
+      "description": "The prompt to run on the fetched content"
+    }
+  },
+  "required": ["url", "prompt"],
+  "additionalProperties": false
+}`)
+
+// Definition returns the canonical custom-tool declaration.
+func Definition() core.ToolDefinition {
+	return core.ToolDefinition{
+		Name:        ToolName,
+		Description: ToolPrompt,
+		InputSchema: append(json.RawMessage(nil), inputSchema...),
+	}
+}
 
 const restrictedGuidelines = `Provide a concise response based only on the content above. In your response:
  - Enforce a strict 125-character maximum for quotes from any source document. Open Source Software is ok as long as we respect the license.

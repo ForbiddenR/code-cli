@@ -142,10 +142,7 @@ func (writer *boundedCombinedWriter) Write(data []byte) (int, error) {
 	}
 	remaining := writer.limit - writer.buffer.Len()
 	if remaining > 0 {
-		count := len(data)
-		if count > remaining {
-			count = remaining
-		}
+		count := min(len(data), remaining)
 		_, _ = writer.buffer.Write(data[:count])
 	}
 	if len(data) > remaining {

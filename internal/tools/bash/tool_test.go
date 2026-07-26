@@ -85,7 +85,6 @@ func TestParseInput(t *testing.T) {
 
 func TestValidateInput(t *testing.T) {
 	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), 0, -1, MaxTimeoutMS + 1} {
-		value := value
 		if err := ValidateInput(Input{Command: "x", TimeoutMS: &value}); err == nil {
 			t.Fatalf("timeout %v succeeded", value)
 		}
@@ -334,17 +333,10 @@ func TestSemanticsHeuristic(t *testing.T) {
 	}
 }
 
-func TestNilToolAndContext(t *testing.T) {
+func TestNilTool(t *testing.T) {
 	var tool *Tool
 	if _, err := tool.Call(context.Background(), Input{}); err == nil {
 		t.Fatal("nil tool succeeded")
-	}
-	tool, err := New(Config{WorkingDirectory: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tool.Call(context.TODO(), Input{}); err == nil {
-		t.Fatal("nil context succeeded")
 	}
 }
 

@@ -138,7 +138,7 @@ func isAssignment(word string) bool {
 	if separator <= 0 {
 		return false
 	}
-	for index := 0; index < separator; index++ {
+	for index := range separator {
 		value := word[index]
 		if index == 0 {
 			if value != '_' && (value < 'A' || value > 'Z') && (value < 'a' || value > 'z') {

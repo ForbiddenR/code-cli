@@ -182,10 +182,7 @@ func (tool *Tool) Call(ctx context.Context, input Input) (Output, error) {
 		KillGracePeriod: tool.killGracePeriod,
 		WaitDelay:       tool.waitDelay,
 	})
-	elapsed := tool.now().Sub(startedAt)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(tool.now().Sub(startedAt), 0)
 	exitCode := result.ExitCode
 	if !result.Started {
 		exitCode = -1

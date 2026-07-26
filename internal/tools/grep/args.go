@@ -64,12 +64,12 @@ func buildArguments(input Input, target string) []string {
 
 func splitGlobPatterns(value string) []string {
 	var patterns []string
-	for _, token := range strings.Fields(value) {
+	for token := range strings.FieldsSeq(value) {
 		if strings.Contains(token, "{") && strings.Contains(token, "}") {
 			patterns = append(patterns, token)
 			continue
 		}
-		for _, part := range strings.Split(token, ",") {
+		for part := range strings.SplitSeq(token, ",") {
 			if part != "" {
 				patterns = append(patterns, part)
 			}
