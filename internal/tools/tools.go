@@ -13,6 +13,7 @@ import (
 	"code-cli/internal/tools/bash"
 	"code-cli/internal/tools/brief"
 	"code-cli/internal/tools/grep"
+	"code-cli/internal/tools/skill"
 	"code-cli/internal/tools/webfetch"
 	"code-cli/internal/tools/websearch"
 )
@@ -31,6 +32,7 @@ type Config struct {
 	Brief     brief.Config
 	WebFetch  webfetch.Config
 	WebSearch websearch.Config
+	Skill     skill.Config
 	Provider  string
 	Model     core.ModelID
 	Now       func() time.Time // Overrides the shared WebSearch definition and execution clock.
@@ -55,17 +57,34 @@ type ExecuteOptions struct {
 	Progress  ProgressFunc
 }
 
+// InjectedMessage is conversation content emitted separately from a tool result.
+type InjectedMessage struct {
+	Message         core.Message
+	IsMeta          bool
+	SourceToolUseID string
+}
+
+// ContextEffects declares optional context changes for a host to apply.
+type ContextEffects struct {
+	AllowedTools []string
+	Model        string
+	Effort       *core.Effort
+}
+
 // ExecutionResult retains typed host output and its normalized model result.
 type ExecutionResult struct {
-	CanonicalName string
-	Output        any
-	ToolResult    core.ContentBlock
+	CanonicalName  string
+	Output         any
+	ToolResult     core.ContentBlock
+	NewMessages    []InjectedMessage
+	ContextEffects *ContextEffects
 }
 
 // Registry is an immutable collection of the retained concrete tools.
 type Registry struct {
 	entries []Tool
 	byName  map[string]int
+	skills  []skill.Summary
 }
 
 // NewRegistry constructs every retained concrete tool atomically.
@@ -77,6 +96,10 @@ func NewRegistry(config Config) (*Registry, error) {
 	grepTool := grep.New(config.Grep)
 	webFetchTool := webfetch.New(config.WebFetch)
 	briefTool := brief.New(config.Brief)
+	skillTool, err := skill.New(config.Skill)
+	if err != nil {
+		return nil, fmt.Errorf("construct %s tool: %w", skill.ToolName, err)
+	}
 
 	now := config.Now
 	if now == nil {
@@ -102,8 +125,14 @@ func NewRegistry(config Config) (*Registry, error) {
 		newWebFetchEntry(webFetchTool),
 		newWebSearchEntry(webSearchTool, websearch.Definition(now()), webSearchEnabled),
 		newBriefEntry(briefTool),
+		newSkillEntry(skillTool),
 	}
-	return buildRegistry(entries)
+	registry, err := buildRegistry(entries)
+	if err != nil {
+		return nil, err
+	}
+	registry.skills = skillTool.Available()
+	return registry, nil
 }
 
 // All returns all concrete entries in stable model-facing order.
@@ -156,6 +185,14 @@ func (registry *Registry) EnabledDefinitions() []core.ToolDefinition {
 		}
 	}
 	return result
+}
+
+// Skills returns model-invocable configured skill summaries.
+func (registry *Registry) Skills() []skill.Summary {
+	if registry == nil {
+		return nil
+	}
+	return append([]skill.Summary(nil), registry.skills...)
 }
 
 // Lookup resolves an exact canonical name or alias.
@@ -325,6 +362,56 @@ func newWebSearchEntry(tool *websearch.WebSearchTool, definition core.ToolDefini
 			}
 			mapped := websearch.MapToolResultToToolResultBlockParam(output, options.ToolUseID)
 			return normalizedResult(definition.Name, output, mapped.Content, false, options.ToolUseID), nil
+		},
+	})
+}
+
+func newSkillEntry(tool *skill.Tool) Tool {
+	definition := skill.Definition()
+	return buildTool(toolSpec{
+		definition:         definition,
+		maxResultSizeChars: skill.MaxResultSizeChars,
+		classify: classifyWith(definition.Name, skill.ParseInput, func(skill.Input) InputClassification {
+			return InputClassification{}
+		}),
+		execute: func(ctx context.Context, raw json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
+			input, err := skill.ParseInput(raw)
+			if err != nil {
+				return ExecutionResult{}, invalidInputError(definition.Name, err)
+			}
+			launched, callErr := tool.Call(ctx, input)
+			if callErr != nil {
+				if errors.Is(callErr, skill.ErrSkillNotFound) ||
+					errors.Is(callErr, skill.ErrModelInvocationOff) ||
+					errors.Is(callErr, skill.ErrForkContextUnsupported) {
+					return ExecutionResult{}, invalidInputError(definition.Name, callErr)
+				}
+				return failedResult(definition.Name, launched.Output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
+			}
+			result := normalizedResult(
+				definition.Name,
+				launched.Output,
+				"Launching skill: "+launched.Output.CommandName,
+				false,
+				options.ToolUseID,
+			)
+			result.NewMessages = []InjectedMessage{{
+				Message:         core.UserMessage(launched.Instructions),
+				IsMeta:          true,
+				SourceToolUseID: options.ToolUseID,
+			}}
+			if len(launched.AllowedTools) > 0 || launched.Model != "" || launched.Effort != nil {
+				effects := &ContextEffects{
+					AllowedTools: append([]string(nil), launched.AllowedTools...),
+					Model:        launched.Model,
+				}
+				if launched.Effort != nil {
+					effort := *launched.Effort
+					effects.Effort = &effort
+				}
+				result.ContextEffects = effects
+			}
+			return result, nil
 		},
 	})
 }

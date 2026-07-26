@@ -28,11 +28,14 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools/bash` — focused local `Bash` boundary for bounded foreground
   shell execution, timeout and cancellation handling, process-tree cleanup,
   structured results, and model-facing error mapping
+- `internal/tools/skill` — immutable local `Skill` catalog loaded from explicit
+  roots, with safe frontmatter parsing, deterministic argument expansion,
+  structured discovery summaries, and declarative conversation effects
 - `internal/tools` — concrete built-in registry and raw JSON dispatch layer for
-  Bash, Grep, WebFetch, WebSearch, and SendUserMessage (with `Brief` as a
-  compatibility alias)
+  Bash, Grep, WebFetch, WebSearch, SendUserMessage (with `Brief` as a
+  compatibility alias), and Skill
 
-The concrete registry exposes a stable five-tool order, defensive definition
+The concrete registry exposes a stable six-tool order, defensive definition
 copies, exact case-sensitive canonical and alias lookup, strict raw JSON
 execution, typed host outputs, and normalized `core.ContentBlock` tool results.
 `Brief` resolves to `SendUserMessage` but is not advertised as a separate model
@@ -44,14 +47,15 @@ defaults to first-party and the core default model.
 Each registry entry also exposes the retained non-UI portions of the shared
 Claude Code tool contract: enabled state, strict parser-backed input
 classification, and the TypeScript-compatible model-result size limit. Bash is
-classified conservatively as neither concurrency-safe nor read-only; Grep,
-WebFetch, WebSearch, and SendUserMessage are concurrency-safe and read-only.
+classified conservatively as neither concurrency-safe nor read-only; Skill uses
+those same conservative defaults. Grep, WebFetch, WebSearch, and
+SendUserMessage are concurrency-safe and read-only.
 These values are scheduling and descriptive metadata only. They do not grant
 permission, authorize shell commands, or provide sandboxing.
 
 Bash and Grep advertise the Anthropic custom-tool top-level `strict: true`
 metadata. This API field is distinct from local strict JSON parsing and from
-`input_schema.additionalProperties: false`; the remaining three definitions
+`input_schema.additionalProperties: false`; the remaining four definitions
 retain closed schemas without advertising top-level strict mode.
 
 `WebSearch` is a locally dispatched outer tool that internally declares
@@ -96,6 +100,29 @@ Tests use fake runners and temporary files, so they do not require ripgrep.
 Vendored or embedded ripgrep selection, code signing, availability telemetry,
 permission rules and UI, plugin-cache exclusions, and generic oversized-result
 persistence are not implemented.
+
+The `skill` package loads only `<configured-root>/<skill-name>/SKILL.md`. Roots
+are canonicalized and validated at registry construction, candidates are
+snapshotted immutably, duplicate names use first-root precedence, and symlinks
+must resolve inside their configured root. `Registry.Skills()` exposes sorted,
+defensive summaries for a host to render into its prompt; the registry does not
+inject discovery listings by itself.
+
+Skill frontmatter supports `description`, `when_to_use`, `allowed-tools`,
+`model`, `effort`, `disable-model-invocation`, `arguments`, and detection of
+unsupported `context: fork`. Prompt expansion supports `$ARGUMENTS`, indexed
+forms, declared named arguments, and `${CLAUDE_SKILL_DIR}` without invoking a
+shell. A successful call returns the short ordinary tool result
+`Launching skill: <name>`, a separate meta user message containing the expanded
+instructions, and optional declarative allowed-tool/model/effort effects. A host
+must preserve that ordering and decide how to apply the effects.
+
+Configured skill Markdown is trusted prompt content. `allowed-tools` metadata is
+only a requested context effect: it does not authorize tools, bypass permission
+checks, or grant filesystem or shell access. Automatic user/project discovery,
+legacy commands, bundled/plugin/MCP/remote skills, dynamic path activation,
+hooks, inline shell execution, forked agents, session/compaction state,
+telemetry, and query-loop application are intentionally excluded.
 
 **Security warning:** calling the `bash` package executes arbitrary shell code
 with the privileges and snapshotted environment of the hosting process. The

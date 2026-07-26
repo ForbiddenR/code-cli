@@ -19,6 +19,7 @@ import (
 	"code-cli/internal/tools/bash"
 	"code-cli/internal/tools/brief"
 	"code-cli/internal/tools/grep"
+	"code-cli/internal/tools/skill"
 	"code-cli/internal/tools/webfetch"
 	"code-cli/internal/tools/websearch"
 )
@@ -63,7 +64,7 @@ func (stream *registryStream) Close() error                            { return 
 
 func TestRegistryEnumeratesAndLooksUpConcreteTools(t *testing.T) {
 	registry := newTestRegistry(t, newRegistryStream())
-	wantNames := []string{"Bash", "Grep", "WebFetch", "WebSearch", "SendUserMessage"}
+	wantNames := []string{"Bash", "Grep", "WebFetch", "WebSearch", "SendUserMessage", "Skill"}
 
 	entries := registry.All()
 	definitions := registry.Definitions()
@@ -115,6 +116,7 @@ func TestRegistryToolMetadataAndClassification(t *testing.T) {
 		{name: "WebFetch", input: json.RawMessage(`{"url":"https://example.com","prompt":"read"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
 		{name: "WebSearch", input: json.RawMessage(`{"query":"current Go"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
 		{name: "SendUserMessage", input: json.RawMessage(`{"message":"done","status":"normal"}`), maxResultChars: 100_000, classification: InputClassification{ConcurrencySafe: true, ReadOnly: true}},
+		{name: "Skill", input: json.RawMessage(`{"skill":"review","args":"src"}`), maxResultChars: 100_000},
 	}
 
 	for _, test := range tests {
@@ -142,10 +144,10 @@ func TestRegistryEnabledViewsAndDisabledDispatch(t *testing.T) {
 	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
 		config.Provider = "bedrock"
 	})
-	if len(registry.All()) != 5 || len(registry.Definitions()) != 5 {
+	if len(registry.All()) != 6 || len(registry.Definitions()) != 6 {
 		t.Fatalf("exhaustive entries = %d, definitions = %d", len(registry.All()), len(registry.Definitions()))
 	}
-	wantEnabled := []string{"Bash", "Grep", "WebFetch", "SendUserMessage"}
+	wantEnabled := []string{"Bash", "Grep", "WebFetch", "SendUserMessage", "Skill"}
 	enabled := registry.Enabled()
 	definitions := registry.EnabledDefinitions()
 	if len(enabled) != len(wantEnabled) || len(definitions) != len(wantEnabled) {
@@ -192,7 +194,7 @@ func TestRegistryEnabledViewsAndDisabledDispatch(t *testing.T) {
 	}
 
 	var nilRegistry *Registry
-	if nilRegistry.Enabled() != nil || nilRegistry.EnabledDefinitions() != nil {
+	if nilRegistry.Enabled() != nil || nilRegistry.EnabledDefinitions() != nil || nilRegistry.Skills() != nil {
 		t.Fatal("nil registry enabled views were not safe")
 	}
 }
@@ -260,12 +262,101 @@ func TestRegistryDispatchesEveryConcreteTool(t *testing.T) {
 			if test.outputType != nil && reflect.TypeOf(result.Output) != reflect.TypeOf(test.outputType) {
 				t.Fatalf("output type = %T, want %T", result.Output, test.outputType)
 			}
+			if result.NewMessages != nil || result.ContextEffects != nil {
+				t.Fatalf("ordinary tool returned Skill effects: %#v", result)
+			}
 		})
 	}
 	if len(progress) != 2 ||
 		progress[0].ToolName != "WebSearch" || progress[0].Type != string(websearch.ProgressQueryUpdate) || progress[0].ToolUseID != "toolu_WebSearch" || progress[0].OperationID != "search-progress-1" || progress[0].Query != "current Go" ||
 		progress[1].ToolName != "WebSearch" || progress[1].Type != string(websearch.ProgressResultsReceived) || progress[1].ToolUseID != "toolu_WebSearch" || progress[1].OperationID != "srv_1" || progress[1].Query != "current Go" || progress[1].ResultCount != 1 {
 		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestRegistryDispatchesSkill(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "review")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := `---
+description: Review code
+when_to_use: Use before merging
+allowed-tools: [Read, Grep, Read]
+model: claude-opus-4-8
+effort: high
+arguments: [target]
+---
+Review $target from ${CLAUDE_SKILL_DIR}.`
+	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"hidden": "---\ndisable-model-invocation: true\n---\nHidden",
+		"forked": "---\ncontext: fork\n---\nForked",
+	} {
+		skillDirectory := filepath.Join(root, name)
+		if err := os.Mkdir(skillDirectory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDirectory, "SKILL.md"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
+		config.Skill = skill.Config{Roots: []string{root}}
+	})
+
+	summaries := registry.Skills()
+	wantSummaries := []skill.Summary{{Name: "review", Description: "Review code Use before merging"}}
+	if !reflect.DeepEqual(summaries, wantSummaries) {
+		t.Fatalf("Skills() = %#v, want %#v", summaries, wantSummaries)
+	}
+	summaries[0].Name = "changed"
+	if registry.Skills()[0].Name != "review" {
+		t.Fatal("Skills returned mutable registry state")
+	}
+
+	result, err := registry.Execute(
+		context.Background(),
+		"Skill",
+		json.RawMessage(`{"skill":"/review","args":"src/main.go"}`),
+		ExecuteOptions{ToolUseID: "toolu_skill"},
+	)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	output, ok := result.Output.(skill.Output)
+	if !ok || !output.Success || !output.Inline || output.CommandName != "review" {
+		t.Fatalf("output = %#v", result.Output)
+	}
+	if result.CanonicalName != "Skill" || result.ToolResult.ToolUseID != "toolu_skill" || result.ToolResult.IsError || len(result.ToolResult.Content) != 1 || result.ToolResult.Content[0].Text != "Launching skill: review" {
+		t.Fatalf("tool result = %#v", result)
+	}
+	if len(result.NewMessages) != 1 || !result.NewMessages[0].IsMeta || result.NewMessages[0].SourceToolUseID != "toolu_skill" || result.NewMessages[0].Message.Role != core.RoleUser || len(result.NewMessages[0].Message.Content) != 1 {
+		t.Fatalf("new messages = %#v", result.NewMessages)
+	}
+	canonicalDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := result.NewMessages[0].Message.Content[0].Text
+	if !strings.Contains(instructions, "Base directory for this skill: "+canonicalDirectory) || !strings.Contains(instructions, "Review src/main.go from "+canonicalDirectory+".") {
+		t.Fatalf("instructions = %q", instructions)
+	}
+	if result.ContextEffects == nil || !reflect.DeepEqual(result.ContextEffects.AllowedTools, []string{"Read", "Grep"}) || result.ContextEffects.Model != "claude-opus-4-8" || result.ContextEffects.Effort == nil || *result.ContextEffects.Effort != core.EffortHigh {
+		t.Fatalf("context effects = %#v", result.ContextEffects)
+	}
+
+	for _, name := range []string{"missing", "../review", "hidden", "forked"} {
+		input, marshalErr := json.Marshal(map[string]string{"skill": name})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, err := registry.Execute(context.Background(), "Skill", input, ExecuteOptions{ToolUseID: "toolu_bad"}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("invalid skill %q error = %v", name, err)
+		}
 	}
 }
 
@@ -328,6 +419,12 @@ func TestRegistryConstructionValidation(t *testing.T) {
 
 	if _, err := NewRegistry(Config{Bash: bash.Config{WorkingDirectory: filepath.Join(t.TempDir(), "missing")}}); err == nil || !strings.Contains(err.Error(), "construct Bash tool") {
 		t.Fatalf("constructor error = %v", err)
+	}
+	if _, err := NewRegistry(Config{
+		Bash:  bash.Config{WorkingDirectory: t.TempDir()},
+		Skill: skill.Config{Roots: []string{filepath.Join(t.TempDir(), "missing")}},
+	}); err == nil || !strings.Contains(err.Error(), "construct Skill tool") {
+		t.Fatalf("Skill constructor error = %v", err)
 	}
 
 	execute := func(context.Context, json.RawMessage, ExecuteOptions) (ExecutionResult, error) {
