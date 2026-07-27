@@ -53,8 +53,7 @@ func (execRunner) Run(ctx context.Context, executable string, args []string, max
 		return result, nil
 	}
 	result.ExitCode = -1
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
+	if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
 		result.ExitCode = exitError.ExitCode()
 	}
 	return result, err

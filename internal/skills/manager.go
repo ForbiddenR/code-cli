@@ -662,8 +662,7 @@ func (commandGitIgnoreChecker) IsIgnored(ctx context.Context, workingDirectory, 
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 128) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 128) {
 		return false, nil
 	}
 	if errors.Is(err, exec.ErrNotFound) {
