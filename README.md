@@ -39,6 +39,12 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools` — concrete built-in registry and raw JSON dispatch layer for
   Bash, Grep, WebFetch, WebSearch, SendUserMessage (with `Brief` as a
   compatibility alias), and Skill
+- `internal/session` — UI-independent in-memory transcript and first-message
+  summary state for the interactive prototype
+- `internal/tui` — Bubble Tea v2 source-style flowing header and transcript,
+  growing multiline composer, adaptive color handling, inline resize handling,
+  and local echo presentation using native terminal scrollback
+- `cmd/code-cli` — executable entrypoint for the initial local echo TUI
 
 The concrete registry exposes a stable six-tool order, defensive definition
 copies, exact case-sensitive canonical and alias lookup, strict raw JSON
@@ -206,6 +212,38 @@ application wiring, generic oversized-result persistence, concrete Brief UI and
 upload transport, feature gating, query-loop registration, conversation
 recovery, and other UI, session-transport, OAuth, control-plane, telemetry, and
 repository helpers are intentionally excluded from this reduced module.
+
+## Interactive TUI prototype
+
+The repository now includes a Bubble Tea v2 application that follows the source
+default non-fullscreen layout: a Claude Code identity header, complete transcript,
+prompt composer, and shortcuts footer rendered sequentially in the terminal:
+
+```bash
+go run ./cmd/code-cli
+```
+
+This first vertical slice is deliberately local and deterministic:
+
+- Enter submits the current message; Shift+Enter inserts a newline.
+- The composer grows with multiline and wrapped input without the fullscreen-only
+  half-screen cap; larger content pushes earlier output into terminal scrollback.
+- Bubble Tea runs inline rather than in the alternate screen. The visible title,
+  complete transcript, composer, and footer flow through native terminal scrollback
+  instead of occupying fixed screen regions.
+- The open-sided prompt border, header, transcript, and footer use source-derived
+  colors that adapt to light/dark terminal backgrounds and color capabilities.
+- User and assistant rows use the source-style `❯` and `●` markers.
+- The local agent immediately echoes the submitted text, including multiline text.
+- The first valid user message remains the in-memory session summary and becomes
+  the terminal/window title; the visible identity header remains unchanged.
+- No Anthropic request, credential lookup, tool execution, or network access occurs.
+- Ctrl+C exits the TUI.
+
+The TUI framework is separated from `internal/session`, so a future model-backed
+responder can replace the synchronous echo without moving transcript ownership into
+the terminal renderer. Streaming, permissions, tools, persistence, and generated
+conversation titles are not implemented by this prototype.
 
 ## Development
 
