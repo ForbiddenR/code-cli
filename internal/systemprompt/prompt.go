@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 
 	"code-cli/internal/core"
-	"code-cli/internal/tools/skill"
+	"code-cli/internal/skills"
 )
 
 const (
@@ -34,7 +34,7 @@ type Environment struct {
 type Options struct {
 	Environment         Environment
 	Tools               []core.ToolDefinition
-	Skills              []skill.Summary
+	Skills              []skills.Summary
 	EnablePromptCaching bool
 }
 
@@ -172,7 +172,7 @@ func buildToolSection(enabledTools map[string]struct{}) string {
 	return builder.String()
 }
 
-func buildDynamicPrompt(environment Environment, enabledTools map[string]struct{}, summaries []skill.Summary) string {
+func buildDynamicPrompt(environment Environment, enabledTools map[string]struct{}, summaries []skills.Summary) string {
 	var builder strings.Builder
 	builder.WriteString("# Environment")
 	writeFact(&builder, "Working directory", environment.WorkingDirectory)
@@ -220,19 +220,19 @@ func writeOptionalFact(builder *strings.Builder, name, value string) {
 	}
 }
 
-func buildSkillListing(summaries []skill.Summary) string {
-	normalized := make([]skill.Summary, 0, len(summaries))
+func buildSkillListing(summaries []skills.Summary) string {
+	normalized := make([]skills.Summary, 0, len(summaries))
 	for _, summary := range summaries {
 		name := summary.Name
 		if name != strings.TrimSpace(name) || !validSkillName(name) {
 			continue
 		}
-		normalized = append(normalized, skill.Summary{
+		normalized = append(normalized, skills.Summary{
 			Name:        name,
 			Description: strings.TrimSpace(summary.Description),
 		})
 	}
-	slices.SortFunc(normalized, func(left, right skill.Summary) int {
+	slices.SortFunc(normalized, func(left, right skills.Summary) int {
 		if compared := strings.Compare(left.Name, right.Name); compared != 0 {
 			return compared
 		}

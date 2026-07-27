@@ -31,9 +31,11 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools/bash` — focused local `Bash` boundary for bounded foreground
   shell execution, timeout and cancellation handling, process-tree cleanup,
   structured results, and model-facing error mapping
-- `internal/tools/skill` — immutable local `Skill` catalog loaded from explicit
-  roots, with safe frontmatter parsing, deterministic argument expansion,
-  structured discovery summaries, and declarative conversation effects
+- `internal/skills` — standalone Skill domain with strict and source-aware
+  discovery, legacy commands, conditional activation, bundled registration,
+  deterministic expansion, immutable snapshots, and Linux-safe reference extraction
+- `internal/tools/skill` — model-facing `Skill` adapter over an immutable
+  `internal/skills` snapshot or a shared refreshable manager
 - `internal/tools` — concrete built-in registry and raw JSON dispatch layer for
   Bash, Grep, WebFetch, WebSearch, SendUserMessage (with `Brief` as a
   compatibility alias), and Skill
@@ -104,28 +106,61 @@ Vendored or embedded ripgrep selection, code signing, availability telemetry,
 permission rules and UI, plugin-cache exclusions, and generic oversized-result
 persistence are not implemented.
 
-The `skill` package loads only `<configured-root>/<skill-name>/SKILL.md`. Roots
-are canonicalized and validated at registry construction, candidates are
-snapshotted immutably, duplicate names use first-root precedence, and symlinks
-must resolve inside their configured root. `Registry.Skills()` exposes sorted,
-defensive summaries for a host to render into its prompt; the registry does not
-inject discovery listings by itself.
+The `skills` domain has two loading modes. `LoadStrict` preserves the original
+compatibility behavior for explicit `<root>/<name>/SKILL.md` roots: every root
+must exist, malformed candidates fail atomically, first-root precedence applies,
+and canonical files must remain inside their configured root. A `Manager` adds
+source-aware discovery from bundled, managed, user, project, additional, and
+legacy-command roots. Project roots are searched from the working directory
+outward; lower-precedence name, alias, and canonical-file collisions are skipped
+with diagnostics. Legacy `.claude/commands` Markdown is loaded recursively with
+colon-separated names such as `release:deploy`; a directory containing
+`SKILL.md` is treated as one Skill and suppresses sibling command Markdown.
 
-Skill frontmatter supports `description`, `when_to_use`, `allowed-tools`,
-`model`, `effort`, `disable-model-invocation`, `arguments`, and detection of
-unsupported `context: fork`. Prompt expansion supports `$ARGUMENTS`, indexed
-forms, declared named arguments, and `${CLAUDE_SKILL_DIR}` without invoking a
-shell. A successful call returns the short ordinary tool result
-`Launching skill: <name>`, a separate meta user message containing the expanded
-instructions, and optional declarative allowed-tool/model/effort effects. A host
-must preserve that ordering and decide how to apply the effects.
+The manager exposes immutable snapshots through atomic replacement. `Refresh`
+rescans configured and previously discovered roots. `ObservePaths` discovers
+nested `.claude/skills` roots below the working directory, consults an injected
+Git-ignore checker, and activates `paths` metadata with sticky session semantics.
+`ResetSession` clears dynamic roots and path activations. There is deliberately
+no filesystem watcher or polling. `Registry.Skills()` reads the current manager
+snapshot, so active model-visible summaries change after these explicit calls.
 
-Configured skill Markdown is trusted prompt content. `allowed-tools` metadata is
-only a requested context effect: it does not authorize tools, bypass permission
-checks, or grant filesystem or shell access. Automatic user/project discovery,
-legacy commands, bundled/plugin/MCP/remote skills, dynamic path activation,
-hooks, inline shell execution, forked agents, session/compaction state,
-telemetry, and query-loop application are intentionally excluded.
+Skill frontmatter supports `name` as display metadata while retaining the
+filesystem or legacy namespace as the invocation name, plus `description`,
+`when_to_use`, `argument-hint`, `arguments`, `version`, `allowed-tools`, `model`,
+`effort`, `disable-model-invocation`, `user-invocable`, `paths`, `context`,
+`agent`, `hooks`, and `shell`. Known fields are type-checked and unknown fields
+are ignored. Omitted `allowed-tools` means no requested tool-context change;
+an explicitly empty value requests a restriction to no tools. Neither form
+grants authorization.
+
+Prompt expansion supports `$ARGUMENTS`, indexed forms, declared named
+arguments, `${CLAUDE_SKILL_DIR}`, and an explicitly supplied
+`${CLAUDE_SESSION_ID}`. Registry hosts pass the latter through
+`ExecuteOptions.SessionID`; the compatibility `Tool.Call` method leaves it empty.
+Arguments expand before Skill-directory and session variables. Local trusted
+content may use an injected shell expander, but no shell
+runs by default and bundled or other non-local content cannot use that adapter.
+Fork/agent context, hooks, and shell metadata fail atomically with typed
+unsupported-capability errors when the host has no corresponding adapter.
+
+`BundledRegistry` lets a host register self-contained static or callback-built
+Skills, aliases, enablement predicates, metadata, and optional reference files.
+No product-dependent Claude Code Skill is registered by default. On Linux,
+reference files are extracted lazily and concurrently safely beneath a random
+process-private cache root using no-follow and exclusive creation: directories
+use mode `0700`, files use `0600`, and absolute, malformed, traversal, and
+symlink-attack paths are rejected.
+
+A successful model invocation returns the short ordinary tool result
+`Launching skill: <name>`, then a separate meta user message containing expanded
+instructions, plus optional declarative allowed-tool/model/effort effects. The
+host must preserve that ordering, intersect requested tools with tools it has
+already enabled and authorized, and scope any applied effects appropriately.
+Configured Skill Markdown remains trusted prompt content. Plugin, MCP, remote,
+browser, memory, hooks-runtime, forked-agent, UI, telemetry, feature-flag,
+session-compaction, and query-loop implementations remain intentionally outside
+this standalone subsystem.
 
 The `systemprompt` package builds API-ready `[]core.SystemBlock` values from
 explicit host inputs. A host supplies observed environment facts together with
@@ -177,11 +212,12 @@ repository helpers are intentionally excluded from this reduced module.
 Tests use deterministic fixtures and do not require live Claude API credentials.
 
 ```bash
-CGO_ENABLED=0 go mod tidy
-CGO_ENABLED=0 go fix ./...
-CGO_ENABLED=0 go fmt ./...
-CGO_ENABLED=0 go test ./...
-CGO_ENABLED=0 go build ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go mod tidy
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go fix ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go fmt ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test ./...
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
 git diff --check
 ```
 

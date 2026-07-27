@@ -7,18 +7,18 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	skillsdomain "code-cli/internal/skills"
 )
 
 // Config selects the local directories searched for skills.
 type Config struct {
-	Roots []string
+	Roots   []string
+	Manager *skillsdomain.Manager
 }
 
 // Summary describes a skill that may be invoked by the model.
-type Summary struct {
-	Name        string
-	Description string
-}
+type Summary = skillsdomain.Summary
 
 type entry struct {
 	name      string

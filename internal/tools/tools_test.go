@@ -16,6 +16,7 @@ import (
 
 	"code-cli/internal/anthropicapi"
 	"code-cli/internal/core"
+	skillsdomain "code-cli/internal/skills"
 	"code-cli/internal/tools/bash"
 	"code-cli/internal/tools/brief"
 	"code-cli/internal/tools/grep"
@@ -25,6 +26,12 @@ import (
 )
 
 type registryDoerFunc func(*http.Request) (*http.Response, error)
+
+type registryGitIgnoreFunc func(context.Context, string, string) (bool, error)
+
+func (function registryGitIgnoreFunc) IsIgnored(ctx context.Context, workingDirectory, path string) (bool, error) {
+	return function(ctx, workingDirectory, path)
+}
 
 func (function registryDoerFunc) Do(request *http.Request) (*http.Response, error) {
 	return function(request)
@@ -357,6 +364,106 @@ Review $target from ${CLAUDE_SKILL_DIR}.`
 		if _, err := registry.Execute(context.Background(), "Skill", input, ExecuteOptions{ToolUseID: "toolu_bad"}); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("invalid skill %q error = %v", name, err)
 		}
+	}
+}
+
+func TestRegistryPreservesExplicitEmptySkillToolRestriction(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "restricted")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nallowed-tools: []\n---\nUse no tools."
+	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
+		config.Skill = skill.Config{Roots: []string{root}}
+	})
+
+	result, err := registry.Execute(
+		context.Background(),
+		"Skill",
+		json.RawMessage(`{"skill":"restricted"}`),
+		ExecuteOptions{ToolUseID: "toolu_restricted"},
+	)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.ContextEffects == nil || !result.ContextEffects.AllowedToolsSpecified || len(result.ContextEffects.AllowedTools) != 0 {
+		t.Fatalf("context effects = %#v", result.ContextEffects)
+	}
+	output, ok := result.Output.(skill.Output)
+	if !ok || !output.AllowedToolsSpecified || len(output.AllowedTools) != 0 {
+		t.Fatalf("output = %#v", result.Output)
+	}
+}
+
+func TestRegistrySuppliesSessionIDToSkill(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "session")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte("Session ${CLAUDE_SESSION_ID}."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
+		config.Skill = skill.Config{Roots: []string{root}}
+	})
+
+	result, err := registry.Execute(
+		context.Background(),
+		"Skill",
+		json.RawMessage(`{"skill":"session"}`),
+		ExecuteOptions{ToolUseID: "toolu_session", SessionID: "session-123"},
+	)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.NewMessages) != 1 || !strings.Contains(result.NewMessages[0].Message.Content[0].Text, "Session session-123.") {
+		t.Fatalf("new messages = %#v", result.NewMessages)
+	}
+}
+
+func TestRegistryReadsRefreshableSkillManagerSummaries(t *testing.T) {
+	workingDirectory := t.TempDir()
+	manager, err := skillsdomain.NewManager(context.Background(), skillsdomain.DiscoveryConfig{
+		WorkingDirectory: workingDirectory,
+		DisableUser:      true,
+		DisableProject:   true,
+		DisableLegacy:    true,
+		GitIgnore: registryGitIgnoreFunc(func(context.Context, string, string) (bool, error) {
+			return false, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := newTestRegistryWithConfig(t, newRegistryStream(), func(config *Config) {
+		config.Skill = skill.Config{Manager: manager}
+	})
+	if summaries := registry.Skills(); len(summaries) != 0 {
+		t.Fatalf("initial Skills() = %#v", summaries)
+	}
+
+	nested := filepath.Join(workingDirectory, "packages", "one")
+	skillDirectory := filepath.Join(nested, ".claude", "skills", "nested")
+	if err := os.MkdirAll(skillDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDirectory, "SKILL.md"), []byte("Nested instructions."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	observed := filepath.Join(nested, "main.go")
+	if err := os.WriteFile(observed, []byte("package one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ObservePaths(context.Background(), []string{observed}); err != nil {
+		t.Fatal(err)
+	}
+	if summaries := registry.Skills(); !reflect.DeepEqual(summaries, []skill.Summary{{Name: "nested", Description: "Nested instructions."}}) {
+		t.Fatalf("refreshed Skills() = %#v", summaries)
 	}
 }
 

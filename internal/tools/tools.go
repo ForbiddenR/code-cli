@@ -54,6 +54,7 @@ type ProgressFunc func(ProgressEvent)
 // ExecuteOptions supplies call metadata that is not part of model input.
 type ExecuteOptions struct {
 	ToolUseID string
+	SessionID string
 	Progress  ProgressFunc
 }
 
@@ -66,9 +67,10 @@ type InjectedMessage struct {
 
 // ContextEffects declares optional context changes for a host to apply.
 type ContextEffects struct {
-	AllowedTools []string
-	Model        string
-	Effort       *core.Effort
+	AllowedTools          []string
+	AllowedToolsSpecified bool
+	Model                 string
+	Effort                *core.Effort
 }
 
 // ExecutionResult retains typed host output and its normalized model result.
@@ -82,9 +84,9 @@ type ExecutionResult struct {
 
 // Registry is an immutable collection of the retained concrete tools.
 type Registry struct {
-	entries []Tool
-	byName  map[string]int
-	skills  []skill.Summary
+	entries   []Tool
+	byName    map[string]int
+	skillTool *skill.Tool
 }
 
 // NewRegistry constructs every retained concrete tool atomically.
@@ -131,7 +133,7 @@ func NewRegistry(config Config) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry.skills = skillTool.Available()
+	registry.skillTool = skillTool
 	return registry, nil
 }
 
@@ -189,10 +191,10 @@ func (registry *Registry) EnabledDefinitions() []core.ToolDefinition {
 
 // Skills returns model-invocable configured skill summaries.
 func (registry *Registry) Skills() []skill.Summary {
-	if registry == nil {
+	if registry == nil || registry.skillTool == nil {
 		return nil
 	}
-	return append([]skill.Summary(nil), registry.skills...)
+	return registry.skillTool.Available()
 }
 
 // Lookup resolves an exact canonical name or alias.
@@ -379,11 +381,15 @@ func newSkillEntry(tool *skill.Tool) Tool {
 			if err != nil {
 				return ExecutionResult{}, invalidInputError(definition.Name, err)
 			}
-			launched, callErr := tool.Call(ctx, input)
+			launched, callErr := tool.CallModel(ctx, input, options.SessionID)
 			if callErr != nil {
 				if errors.Is(callErr, skill.ErrSkillNotFound) ||
 					errors.Is(callErr, skill.ErrModelInvocationOff) ||
-					errors.Is(callErr, skill.ErrForkContextUnsupported) {
+					errors.Is(callErr, skill.ErrSkillInactive) ||
+					errors.Is(callErr, skill.ErrForkContextUnsupported) ||
+					errors.Is(callErr, skill.ErrHooksUnsupported) ||
+					errors.Is(callErr, skill.ErrShellUnsupported) ||
+					errors.Is(callErr, skill.ErrSessionIDRequired) {
 					return ExecutionResult{}, invalidInputError(definition.Name, callErr)
 				}
 				return failedResult(definition.Name, launched.Output, options.ToolUseID, callErr), executionError(definition.Name, callErr)
@@ -400,10 +406,11 @@ func newSkillEntry(tool *skill.Tool) Tool {
 				IsMeta:          true,
 				SourceToolUseID: options.ToolUseID,
 			}}
-			if len(launched.AllowedTools) > 0 || launched.Model != "" || launched.Effort != nil {
+			if launched.AllowedToolsSpecified || launched.Model != "" || launched.Effort != nil {
 				effects := &ContextEffects{
-					AllowedTools: append([]string(nil), launched.AllowedTools...),
-					Model:        launched.Model,
+					AllowedTools:          append([]string(nil), launched.AllowedTools...),
+					AllowedToolsSpecified: launched.AllowedToolsSpecified,
+					Model:                 launched.Model,
 				}
 				if launched.Effort != nil {
 					effort := *launched.Effort
