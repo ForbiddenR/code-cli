@@ -33,7 +33,7 @@ func TestPaletteTrueColorMatchesSourceTokens(t *testing.T) {
 			dark: true,
 			want: palette{
 				promptBorder:          lipgloss.Color("#888888"),
-				text:                  lipgloss.Color("#ffffff"),
+				text:                  lipgloss.Color("#e5e5e5"),
 				inactive:              lipgloss.Color("#999999"),
 				subtle:                lipgloss.Color("#505050"),
 				userMessageBackground: lipgloss.Color("#373737"),
@@ -59,7 +59,7 @@ func TestPaletteANSIFallbacks(t *testing.T) {
 	}
 
 	dark := newPalette(true, colorprofile.ANSI)
-	if dark.promptBorder != ansi.White || dark.text != ansi.BrightWhite || dark.inactive != ansi.White || dark.subtle != ansi.White || dark.userMessageBackground != ansi.BrightBlack || dark.claude != ansi.BrightRed || dark.clawdBackground != ansi.Black || dark.error != ansi.Red {
+	if dark.promptBorder != ansi.White || dark.text != ansi.White || dark.inactive != ansi.White || dark.subtle != ansi.White || dark.userMessageBackground != ansi.BrightBlack || dark.claude != ansi.BrightRed || dark.clawdBackground != ansi.Black || dark.error != ansi.Red {
 		t.Fatalf("dark ANSI palette = %#v", dark)
 	}
 }
@@ -68,7 +68,7 @@ func TestPaletteANSI256UsesConvertedSourceColors(t *testing.T) {
 	got := newPalette(true, colorprofile.ANSI256)
 	want := palette{
 		promptBorder:          colorprofile.ANSI256.Convert(lipgloss.Color("#888888")),
-		text:                  colorprofile.ANSI256.Convert(lipgloss.Color("#ffffff")),
+		text:                  colorprofile.ANSI256.Convert(lipgloss.Color("#e5e5e5")),
 		inactive:              colorprofile.ANSI256.Convert(lipgloss.Color("#999999")),
 		subtle:                colorprofile.ANSI256.Convert(lipgloss.Color("#505050")),
 		userMessageBackground: colorprofile.ANSI256.Convert(lipgloss.Color("#373737")),

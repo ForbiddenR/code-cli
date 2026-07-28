@@ -84,9 +84,30 @@ func TestModelStreamsAndCommitsOnlyVisibleAssistantText(t *testing.T) {
 	if got := model.transient; got != "Hello " {
 		t.Fatalf("transient = %q, want streamed text", got)
 	}
-	if content := ansi.Strip(model.View().Content); !strings.Contains(content, "Hello ") || !strings.Contains(content, "Thinking…") {
-		t.Fatalf("streaming view missing transient/status: %q", content)
+	content := ansi.Strip(model.View().Content)
+	if !strings.Contains(content, "Hello ") {
+		t.Fatalf("streaming view missing transient text: %q", content)
 	}
+	// Source hides the spinner while streamed assistant text is visible.
+	if strings.Contains(content, "Thinking…") {
+		t.Fatalf("streaming view still shows spinner inside/near prompt: %q", content)
+	}
+	// Before any text delta, status should sit above the bordered composer.
+	savedTransient := model.transient
+	model.transient = ""
+	model.status = "Thinking…"
+	idleBusy := ansi.Strip(strings.Join(model.renderPrompt(), "\n"))
+	if !strings.Contains(idleBusy, "Thinking…") {
+		t.Fatalf("busy prompt missing Thinking status: %q", idleBusy)
+	}
+	// Status must not appear as a row inside the open-side border block.
+	// Border top is a full-width ─ line; Thinking should be above it.
+	top := strings.Index(idleBusy, "─")
+	statusAt := strings.Index(idleBusy, "Thinking…")
+	if top < 0 || statusAt < 0 || statusAt > top {
+		t.Fatalf("Thinking status should be above prompt border: statusAt=%d top=%d view=%q", statusAt, top, idleBusy)
+	}
+	model.transient = savedTransient
 
 	events <- query.Event{Type: query.EventStream, Stream: &anthropicapi.StreamEvent{
 		Type:  anthropicapi.StreamEventContentBlockDelta,
@@ -128,10 +149,8 @@ func TestModelStreamsAndCommitsOnlyVisibleAssistantText(t *testing.T) {
 	}
 
 	events <- query.Event{Type: query.EventCompleted, Result: &query.Result{Outcome: query.OutcomeEndTurn}}
-	model, focusCommand := runCommand(t, model, command)
-	if focusCommand == nil {
-		t.Fatal("completion should restart focused-input behavior")
-	}
+	model, _ = runCommand(t, model, command)
+	// With Blink disabled, Focus() may return a nil command; focused state is what matters.
 	if model.busy || model.status != "" || model.transient != "" || model.cancel != nil || !model.input.Focused() || model.err != nil {
 		t.Fatalf("completed model = busy %v status %q transient %q cancel %v focused %v err %v", model.busy, model.status, model.transient, model.cancel != nil, model.input.Focused(), model.err)
 	}
@@ -139,14 +158,16 @@ func TestModelStreamsAndCommitsOnlyVisibleAssistantText(t *testing.T) {
 	if view.AltScreen {
 		t.Fatal("View() enables the alternate screen, want inline rendering")
 	}
-	content := ansi.Strip(view.Content)
-	for _, want := range []string{"▐▛███▜▌", "hello world", "Hello world", "❯", "●", "Claude Code", "vtest", "? for shortcuts", "─"} {
+	content = ansi.Strip(view.Content)
+	for _, want := range []string{"❯", "? for shortcuts", "─"} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("View() does not contain %q: %q", want, content)
+			t.Fatalf("live View() does not contain %q: %q", want, content)
 		}
 	}
-	if strings.Contains(content, "canonical hidden history") {
-		t.Fatalf("View() exposed engine-owned canonical history: %q", content)
+	for _, unwanted := range []string{"▐▛███▜▌", "hello world", "Hello world", "Claude Code", "canonical hidden history"} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("live View() still contains committed content %q: %q", unwanted, content)
+		}
 	}
 	if got, want := view.WindowTitle, "hello world"; got != want {
 		t.Fatalf("WindowTitle = %q, want %q", got, want)
@@ -307,11 +328,8 @@ func TestAuthFailureRendersInTranscriptNotComposer(t *testing.T) {
 	}
 
 	content := ansi.Strip(model.View().Content)
-	if !strings.Contains(content, notLoggedInMessage) {
-		t.Fatalf("view missing auth message: %q", content)
-	}
-	if !strings.Contains(content, "⎿") {
-		t.Fatalf("view missing MessageResponse-style prefix: %q", content)
+	if strings.Contains(content, notLoggedInMessage) || strings.Contains(content, "⎿") {
+		t.Fatalf("committed auth transcript remained in live view: %q", content)
 	}
 	if !strings.Contains(content, notLoggedInFooter) {
 		t.Fatalf("view missing footer auth notice: %q", content)
@@ -319,8 +337,13 @@ func TestAuthFailureRendersInTranscriptNotComposer(t *testing.T) {
 	if strings.Contains(content, "Error: ") {
 		t.Fatalf("auth failure still rendered in composer: %q", content)
 	}
-	if strings.Contains(content, "no Anthropic credentials found") || strings.Contains(content, "ANTHROPIC_API_KEY") {
-		t.Fatalf("raw credential diagnostics leaked into view: %q", content)
+
+	staticError := ansi.Strip(model.renderStaticOutput(false, entries, 1, 2))
+	if !strings.Contains(staticError, notLoggedInMessage) || !strings.Contains(staticError, "⎿") {
+		t.Fatalf("static auth transcript = %q", staticError)
+	}
+	if strings.Contains(staticError, "no Anthropic credentials found") || strings.Contains(staticError, "ANTHROPIC_API_KEY") {
+		t.Fatalf("raw credential diagnostics leaked into static transcript: %q", staticError)
 	}
 }
 
@@ -364,6 +387,105 @@ func TestConstructorsRequireSessionAndResponder(t *testing.T) {
 	}
 }
 
+func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
+	responder := &fakeResponder{}
+	model := newTestModelWithResponder(t, responder)
+	model.input.SetValue("hello")
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	if command == nil || model.headerPrinted || model.printedEntries != 0 || !model.staticQueued || !model.queuedHeader || model.queuedEntryCount != 1 {
+		t.Fatalf("submit static state = printed header %v entries %d queued %v queued header %v queued entries %d command %v", model.headerPrinted, model.printedEntries, model.staticQueued, model.queuedHeader, model.queuedEntryCount, command != nil)
+	}
+	if len(responder.calls) != 0 {
+		t.Fatal("query started before static transcript output")
+	}
+
+	message := command()
+	output, ok := message.(staticOutputMsg)
+	if !ok {
+		t.Fatalf("submit command message = %T, want staticOutputMsg", message)
+	}
+	static := ansi.Strip(output.content)
+	for _, want := range []string{"Claude Code", "vtest", "hello"} {
+		if !strings.Contains(static, want) {
+			t.Fatalf("static output missing %q: %q", want, static)
+		}
+	}
+	lines := strings.Split(static, "\n")
+	if len(lines) < 5 || lines[3] != "" {
+		t.Fatalf("static header/user margin = %#v, want blank row after 3-line header", lines)
+	}
+	if output.next == nil {
+		t.Fatal("static output did not retain query continuation")
+	}
+
+	updated, sequence := model.Update(output)
+	model = updated.(Model)
+	if !model.staticQueued || model.headerPrinted || model.printedEntries != 0 || sequence == nil {
+		t.Fatalf("scheduled static output = queued %v header %v entries %d sequence %v", model.staticQueued, model.headerPrinted, model.printedEntries, sequence != nil)
+	}
+
+	updated, continuation := model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
+	if model.staticQueued || !model.headerPrinted || model.printedEntries != 1 || continuation == nil {
+		t.Fatalf("committed static output = queued %v header %v entries %d continuation %v", model.staticQueued, model.headerPrinted, model.printedEntries, continuation != nil)
+	}
+	if len(responder.calls) != 0 {
+		t.Fatal("query started before static output commit")
+	}
+
+	live := ansi.Strip(model.View().Content)
+	if strings.Contains(live, "Claude Code") || strings.Contains(live, "hello") {
+		t.Fatalf("live view retained committed header/transcript: %q", live)
+	}
+	liveLines := strings.Split(live, "\n")
+	if len(liveLines) < 6 || strings.TrimSpace(liveLines[0]) != "" || strings.TrimSpace(liveLines[1]) != "● Thinking…" || strings.TrimSpace(liveLines[2]) != "" || !strings.Contains(liveLines[3], "─") || !strings.HasPrefix(liveLines[4], "❯") || !strings.Contains(liveLines[5], "─") {
+		t.Fatalf("live status/composer order = %#v", liveLines)
+	}
+}
+
+func TestStaticOutputPrintsOnlyNewTranscriptRows(t *testing.T) {
+	model := newTestModel(t)
+	mustAppendUser(t, model.session, "first")
+	firstCommand := model.queueStaticOutput(nil)
+	firstMessage := firstCommand()
+	first, ok := firstMessage.(staticOutputMsg)
+	if !ok {
+		t.Fatalf("first static command = %T", firstMessage)
+	}
+	if content := ansi.Strip(first.content); !strings.Contains(content, "Claude Code") || !strings.Contains(content, "first") {
+		t.Fatalf("first static output = %q", content)
+	}
+	updated, _ := model.Update(staticOutputCommittedMsg{
+		includeHeader: first.includeHeader,
+		entryCount:    first.entryCount,
+		next:          first.next,
+	})
+	model = updated.(Model)
+
+	mustAppendAssistant(t, model.session, "second")
+	secondCommand := model.queueStaticOutput(nil)
+	secondMessage := secondCommand()
+	second, ok := secondMessage.(staticOutputMsg)
+	if !ok {
+		t.Fatalf("second static command = %T", secondMessage)
+	}
+	content := ansi.Strip(second.content)
+	if !strings.HasPrefix(content, "\n") || !strings.Contains(content, "second") {
+		t.Fatalf("second static output lacks source margin/message: %q", content)
+	}
+	for _, repeated := range []string{"Claude Code", "first"} {
+		if strings.Contains(content, repeated) {
+			t.Fatalf("second static output repeated %q: %q", repeated, content)
+		}
+	}
+}
+
 func TestInlineViewRendersRegionsSequentially(t *testing.T) {
 	model := newTestModel(t)
 	mustAppendUser(t, model.session, "earliest transcript entry")
@@ -375,8 +497,12 @@ func TestInlineViewRendersRegionsSequentially(t *testing.T) {
 	headerIndex := strings.Index(content, "Claude Code")
 	earliestIndex := strings.Index(content, "earliest transcript entry")
 	latestIndex := strings.Index(content, "latest transcript entry")
-	composerIndex := strings.Index(content, "Type a message…")
+	// Composer has no placeholder; the open-side prompt border sits just above the footer.
 	footerIndex := strings.Index(content, "? for shortcuts")
+	composerIndex := -1
+	if footerIndex > 0 {
+		composerIndex = strings.LastIndex(content[:footerIndex], "─")
+	}
 	if !(headerIndex >= 0 && headerIndex < earliestIndex && earliestIndex < latestIndex && latestIndex < composerIndex && composerIndex < footerIndex) {
 		t.Fatalf("regions are not sequential: header=%d earliest=%d latest=%d composer=%d footer=%d\n%s", headerIndex, earliestIndex, latestIndex, composerIndex, footerIndex, content)
 	}
@@ -611,8 +737,37 @@ func runCommand(t *testing.T, model Model, command tea.Cmd) (Model, tea.Cmd) {
 	if command == nil {
 		t.Fatal("expected non-nil command")
 	}
-	updated, next := model.Update(command())
-	return updated.(Model), next
+
+	message := command()
+	if output, ok := message.(staticOutputMsg); ok {
+		updated, _ := model.Update(staticOutputCommittedMsg{
+			includeHeader: output.includeHeader,
+			entryCount:    output.entryCount,
+			next:          output.next,
+		})
+		model = updated.(Model)
+		if output.next == nil {
+			return model, nil
+		}
+		message = output.next()
+	}
+
+	updated, next := model.Update(message)
+	model = updated.(Model)
+	if !model.staticQueued || next == nil {
+		return model, next
+	}
+
+	output, ok := next().(staticOutputMsg)
+	if !ok {
+		t.Fatal("static output was queued without a staticOutputMsg command")
+	}
+	updated, _ = model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	return updated.(Model), output.next
 }
 
 func mustAppendUser(t *testing.T, state *session.Session, text string) {

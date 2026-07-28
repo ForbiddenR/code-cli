@@ -67,20 +67,38 @@ type Config struct {
 
 // Model is the Bubble Tea model for the streamed query TUI.
 type Model struct {
-	session        *session.Session
-	responder      Responder
-	config         Config
-	input          textarea.Model
-	width          int
-	darkBackground bool
-	colorProfile   colorprofile.Profile
-	palette        palette
-	busy           bool
-	status         string
-	transient      string
-	cancel         context.CancelFunc
-	canceling      bool
-	err            error
+	session          *session.Session
+	responder        Responder
+	config           Config
+	input            textarea.Model
+	width            int
+	darkBackground   bool
+	colorProfile     colorprofile.Profile
+	palette          palette
+	busy             bool
+	status           string
+	transient        string
+	cancel           context.CancelFunc
+	canceling        bool
+	err              error
+	headerPrinted    bool
+	printedEntries   int
+	staticQueued     bool
+	queuedHeader     bool
+	queuedEntryCount int
+}
+
+type staticOutputMsg struct {
+	content       string
+	includeHeader bool
+	entryCount    int
+	next          tea.Cmd
+}
+
+type staticOutputCommittedMsg struct {
+	includeHeader bool
+	entryCount    int
+	next          tea.Cmd
 }
 
 type queryEventMsg struct {
@@ -114,7 +132,7 @@ func NewWithConfig(sessionState *session.Session, config Config) (Model, error) 
 
 	input := textarea.New()
 	input.Prompt = ""
-	input.Placeholder = "Type a message…"
+	input.Placeholder = ""
 	input.ShowLineNumbers = false
 	input.EndOfBufferCharacter = ' '
 	input.DynamicHeight = true
@@ -162,11 +180,11 @@ func (model Model) Session() *session.Session {
 	return model.session
 }
 
-// Init initializes cursor blinking and requests the terminal background color.
+// Init requests the terminal background color for palette adaptation.
 func (model Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, func() tea.Msg {
+	return func() tea.Msg {
 		return tea.RequestBackgroundColor()
-	})
+	}
 }
 
 // Update serializes terminal input and asynchronous responder events.
@@ -193,6 +211,26 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.Code == tea.KeyEnter && message.Mod == 0 {
 			return model, model.submit()
 		}
+	case staticOutputMsg:
+		return model, tea.Sequence(
+			tea.Println(message.content),
+			func() tea.Msg {
+				return staticOutputCommittedMsg{
+					includeHeader: message.includeHeader,
+					entryCount:    message.entryCount,
+					next:          message.next,
+				}
+			},
+		)
+	case staticOutputCommittedMsg:
+		if message.includeHeader {
+			model.headerPrinted = true
+		}
+		model.printedEntries = max(model.printedEntries, message.entryCount)
+		model.staticQueued = false
+		model.queuedHeader = false
+		model.queuedEntryCount = 0
+		return model, message.next
 	case queryEventMsg:
 		return model.handleQueryEvent(message)
 	case tea.WindowSizeMsg:
@@ -213,7 +251,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return model, command
 }
 
-// View renders the header, transcript, composer, and footer as one inline document.
+// View renders only content still managed by Bubble Tea. Stable header and
+// transcript rows are printed above the program into native scrollback.
 func (model Model) View() tea.View {
 	view := tea.NewView(strings.Join(model.renderLines(), "\n"))
 	if summary := model.session.Summary(); summary != "" {
@@ -241,7 +280,7 @@ func (model *Model) submit() tea.Cmd {
 	model.input.Blur()
 	model.configureInputGeometry()
 
-	return startQuery(model.responder, ctx, core.UserMessage(entry.Text))
+	return model.queueStaticOutput(startQuery(model.responder, ctx, core.UserMessage(entry.Text)))
 }
 
 func startQuery(responder Responder, ctx context.Context, message core.Message) tea.Cmd {
@@ -249,6 +288,41 @@ func startQuery(responder Responder, ctx context.Context, message core.Message) 
 		events := responder.SubmitEvents(ctx, message, queryEventBuffer)
 		return receiveQueryEvent(events)
 	}
+}
+
+// queueStaticOutput removes stable rows from the managed view and schedules
+// them for insertion above the program. Printed markers advance only after the
+// renderer receives the output, and the continuation runs after that commit.
+func (model *Model) queueStaticOutput(next tea.Cmd) tea.Cmd {
+	entries := model.session.Entries()
+	start := min(model.printedEntries, len(entries))
+	includeHeader := !model.headerPrinted
+	if !includeHeader && start == len(entries) {
+		return next
+	}
+
+	entryCount := len(entries)
+	content := model.renderStaticOutput(includeHeader, entries, start, entryCount)
+	model.staticQueued = true
+	model.queuedHeader = includeHeader
+	model.queuedEntryCount = entryCount
+	return func() tea.Msg {
+		return staticOutputMsg{
+			content:       content,
+			includeHeader: includeHeader,
+			entryCount:    entryCount,
+			next:          next,
+		}
+	}
+}
+
+func (model Model) renderStaticOutput(includeHeader bool, entries []session.Entry, start, end int) string {
+	var lines []string
+	if includeHeader {
+		lines = append(lines, model.renderHeader()...)
+	}
+	lines = append(lines, model.renderTranscriptEntries(entries, start, end, true)...)
+	return strings.Join(lines, "\n")
 }
 
 func nextQueryEvent(events <-chan query.Event) tea.Cmd {
@@ -289,11 +363,13 @@ func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd)
 		if text := visibleAssistantText(message.event.Message); text != "" {
 			if err := model.session.AppendAssistant(text); err != nil {
 				model.err = err
+			} else {
+				return *model, model.queueStaticOutput(nextQueryEvent(message.events))
 			}
 		}
 	case query.EventCompleted:
 		model.finishQuery(completionError(message.event))
-		return *model, model.input.Focus()
+		return *model, model.queueStaticOutput(model.input.Focus())
 	}
 	return *model, nextQueryEvent(message.events)
 }
@@ -412,16 +488,20 @@ func (model *Model) applyInputStyles() {
 	model.input.SetStyles(textarea.Styles{
 		Focused: state,
 		Blurred: state,
+		// Soft dark-theme text (palette.text), not pure white.
 		Cursor: textarea.CursorStyle{
 			Color: model.palette.text,
 			Shape: tea.CursorBlock,
-			Blink: true,
+			Blink: false,
 		},
 	})
 }
 
 func (model Model) renderLines() []string {
-	lines := model.renderHeader()
+	var lines []string
+	if !model.headerPrinted && !(model.staticQueued && model.queuedHeader) {
+		lines = model.renderHeader()
+	}
 	lines = append(lines, model.renderTranscript()...)
 	lines = append(lines, model.renderPrompt()...)
 	lines = append(lines, model.renderFooter()...)
@@ -499,23 +579,37 @@ func (model Model) renderPrompt() []string {
 		}
 		inputRows[index] = padDisplay(row, model.width)
 	}
-	if model.status != "" {
-		status := lipgloss.NewStyle().Foreground(model.palette.inactive).Render("  " + model.status)
-		inputRows = append(inputRows, padDisplay(status, model.width))
-	}
-	// Non-auth failures still surface under the composer; auth is transcript-only.
-	if model.err != nil {
-		status := lipgloss.NewStyle().Foreground(model.palette.error).Render("  Error: " + model.err.Error())
-		inputRows = append(inputRows, padDisplay(status, model.width))
-	}
 
+	// Source places SpinnerWithVerb above PromptInput, not inside the border.
 	content := lipgloss.NewStyle().
 		Width(model.width).
 		BorderForeground(model.palette.promptBorder).
 		Border(lipgloss.RoundedBorder(), true, false, true, false).
 		Render(strings.Join(inputRows, "\n"))
-	lines := strings.Split(content, "\n")
-	return append([]string{strings.Repeat(" ", model.width)}, lines...)
+	lines := []string{strings.Repeat(" ", model.width)}
+	if status := model.busyStatusLine(); status != "" {
+		lines = append(lines, status, strings.Repeat(" ", model.width))
+	}
+	lines = append(lines, strings.Split(content, "\n")...)
+	// Non-auth failures stay outside the composer; auth is transcript-only.
+	if model.err != nil {
+		errLine := lipgloss.NewStyle().Foreground(model.palette.error).Render("  Error: " + model.err.Error())
+		lines = append(lines, padDisplay(errLine, model.width))
+	}
+	return lines
+}
+
+// busyStatusLine mirrors the source spinner row above the prompt.
+// Hidden while streamed assistant text is visible, except during cancel.
+func (model Model) busyStatusLine() string {
+	if model.status == "" {
+		return ""
+	}
+	if model.transient != "" && !model.canceling {
+		return ""
+	}
+	status := lipgloss.NewStyle().Foreground(model.palette.claude).Render("● " + model.status)
+	return padDisplay(status, model.width)
 }
 
 func (model Model) renderFooter() []string {
@@ -571,15 +665,47 @@ func alignRight(value string, width int) string {
 
 func (model Model) renderTranscript() []string {
 	entries := model.session.Entries()
-	if len(entries) == 0 && model.transient == "" {
+	start := model.printedEntries
+	if model.staticQueued {
+		start = max(start, model.queuedEntryCount)
+	}
+	start = min(start, len(entries))
+	if start == len(entries) && model.transient == "" {
+		return nil
+	}
+
+	lines := model.renderTranscriptEntries(entries, start, len(entries), true)
+	if model.transient == "" {
+		return lines
+	}
+
+	var builder strings.Builder
+	if len(lines) > 0 {
+		builder.WriteString(strings.Join(lines, "\n"))
+		builder.WriteString("\n\n")
+	} else {
+		builder.WriteByte('\n')
+	}
+	model.renderAssistantEntry(&builder, model.transient)
+	return strings.Split(builder.String(), "\n")
+}
+
+func (model Model) renderTranscriptEntries(entries []session.Entry, start, end int, leadingMargin bool) []string {
+	start = min(max(0, start), len(entries))
+	end = min(max(start, end), len(entries))
+	if start == end {
 		return nil
 	}
 
 	var builder strings.Builder
-	for index, entry := range entries {
-		if index > 0 {
+	if leadingMargin {
+		builder.WriteByte('\n')
+	}
+	for index := start; index < end; index++ {
+		if index > start {
 			builder.WriteString("\n\n")
 		}
+		entry := entries[index]
 		switch {
 		case entry.Style == session.EntryStyleError:
 			model.renderErrorEntry(&builder, entry.Text)
@@ -590,12 +716,6 @@ func (model Model) renderTranscript() []string {
 		default:
 			model.renderOtherEntry(&builder, string(entry.Role)+": "+entry.Text)
 		}
-	}
-	if model.transient != "" {
-		if len(entries) > 0 {
-			builder.WriteString("\n\n")
-		}
-		model.renderAssistantEntry(&builder, model.transient)
 	}
 	return strings.Split(builder.String(), "\n")
 }

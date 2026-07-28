@@ -22,8 +22,10 @@ type palette struct {
 func newPalette(dark bool, profile colorprofile.Profile) palette {
 	lightDark := lipgloss.LightDark(dark)
 	return palette{
-		promptBorder:          completeColor(profile, ansi.White, lightDark(lipgloss.Color("#999999"), lipgloss.Color("#888888"))),
-		text:                  completeColor(profile, lightDark(ansi.Black, ansi.BrightWhite), lightDark(lipgloss.Color("#000000"), lipgloss.Color("#ffffff"))),
+		promptBorder: completeColor(profile, ansi.White, lightDark(lipgloss.Color("#999999"), lipgloss.Color("#888888"))),
+		// Soft off-white for dark terminals; pure #ffffff/whiteBright reads too harsh
+		// for title, cursor, and body text on typical dark backgrounds.
+		text:                  completeColor(profile, lightDark(ansi.Black, ansi.White), lightDark(lipgloss.Color("#000000"), lipgloss.Color("#e5e5e5"))),
 		inactive:              completeColor(profile, lightDark(ansi.BrightBlack, ansi.White), lightDark(lipgloss.Color("#666666"), lipgloss.Color("#999999"))),
 		subtle:                completeColor(profile, lightDark(ansi.BrightBlack, ansi.White), lightDark(lipgloss.Color("#afafaf"), lipgloss.Color("#505050"))),
 		userMessageBackground: completeColor(profile, lightDark(ansi.White, ansi.BrightBlack), lightDark(lipgloss.Color("#f0f0f0"), lipgloss.Color("#373737"))),
