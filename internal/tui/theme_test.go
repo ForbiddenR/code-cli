@@ -24,6 +24,8 @@ func TestPaletteTrueColorMatchesSourceTokens(t *testing.T) {
 				subtle:                lipgloss.Color("#afafaf"),
 				userMessageBackground: lipgloss.Color("#f0f0f0"),
 				claude:                lipgloss.Color("#d77757"),
+				clawdBackground:       lipgloss.Color("#000000"),
+				error:                 lipgloss.Color("#ab2b3f"),
 			},
 		},
 		{
@@ -36,6 +38,8 @@ func TestPaletteTrueColorMatchesSourceTokens(t *testing.T) {
 				subtle:                lipgloss.Color("#505050"),
 				userMessageBackground: lipgloss.Color("#373737"),
 				claude:                lipgloss.Color("#d77757"),
+				clawdBackground:       lipgloss.Color("#000000"),
+				error:                 lipgloss.Color("#ff6b80"),
 			},
 		},
 	}
@@ -50,12 +54,12 @@ func TestPaletteTrueColorMatchesSourceTokens(t *testing.T) {
 
 func TestPaletteANSIFallbacks(t *testing.T) {
 	light := newPalette(false, colorprofile.ANSI)
-	if light.promptBorder != ansi.White || light.text != ansi.Black || light.inactive != ansi.BrightBlack || light.subtle != ansi.BrightBlack || light.userMessageBackground != ansi.White || light.claude != ansi.BrightRed {
+	if light.promptBorder != ansi.White || light.text != ansi.Black || light.inactive != ansi.BrightBlack || light.subtle != ansi.BrightBlack || light.userMessageBackground != ansi.White || light.claude != ansi.BrightRed || light.clawdBackground != ansi.Black || light.error != ansi.Red {
 		t.Fatalf("light ANSI palette = %#v", light)
 	}
 
 	dark := newPalette(true, colorprofile.ANSI)
-	if dark.promptBorder != ansi.White || dark.text != ansi.BrightWhite || dark.inactive != ansi.White || dark.subtle != ansi.White || dark.userMessageBackground != ansi.BrightBlack || dark.claude != ansi.BrightRed {
+	if dark.promptBorder != ansi.White || dark.text != ansi.BrightWhite || dark.inactive != ansi.White || dark.subtle != ansi.White || dark.userMessageBackground != ansi.BrightBlack || dark.claude != ansi.BrightRed || dark.clawdBackground != ansi.Black || dark.error != ansi.Red {
 		t.Fatalf("dark ANSI palette = %#v", dark)
 	}
 }
@@ -69,6 +73,8 @@ func TestPaletteANSI256UsesConvertedSourceColors(t *testing.T) {
 		subtle:                colorprofile.ANSI256.Convert(lipgloss.Color("#505050")),
 		userMessageBackground: colorprofile.ANSI256.Convert(lipgloss.Color("#373737")),
 		claude:                colorprofile.ANSI256.Convert(lipgloss.Color("#d77757")),
+		clawdBackground:       colorprofile.ANSI256.Convert(lipgloss.Color("#000000")),
+		error:                 colorprofile.ANSI256.Convert(lipgloss.Color("#ff6b80")),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("newPalette() = %#v, want %#v", got, want)
@@ -84,6 +90,8 @@ func TestPaletteDisablesColorForASCIIProfile(t *testing.T) {
 		subtle:                noColor,
 		userMessageBackground: noColor,
 		claude:                noColor,
+		clawdBackground:       noColor,
+		error:                 noColor,
 	}
 	if got := newPalette(true, colorprofile.ASCII); !reflect.DeepEqual(got, want) {
 		t.Fatalf("newPalette() = %#v, want %#v", got, want)

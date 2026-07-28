@@ -209,6 +209,18 @@ func (registry *Registry) Lookup(name string) (Tool, bool) {
 	return cloneTool(registry.entries[index]), true
 }
 
+// Classify resolves an enabled tool and strictly classifies its input.
+func (registry *Registry) Classify(name string, input json.RawMessage) (InputClassification, error) {
+	tool, ok := registry.Lookup(name)
+	if !ok {
+		return InputClassification{}, fmt.Errorf("%w: %q", ErrToolNotFound, name)
+	}
+	if !tool.IsEnabled() {
+		return InputClassification{}, fmt.Errorf("%w: %q", ErrToolDisabled, name)
+	}
+	return tool.ClassifyInput(input)
+}
+
 // Execute resolves and invokes one tool by canonical name or alias.
 func (registry *Registry) Execute(ctx context.Context, name string, input json.RawMessage, options ExecuteOptions) (ExecutionResult, error) {
 	tool, ok := registry.Lookup(name)

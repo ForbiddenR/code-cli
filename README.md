@@ -39,12 +39,16 @@ Code query flow corresponding to `queryModelWithStreaming` in
 - `internal/tools` — concrete built-in registry and raw JSON dispatch layer for
   Bash, Grep, WebFetch, WebSearch, SendUserMessage (with `Brief` as a
   compatibility alias), and Skill
-- `internal/session` — UI-independent in-memory transcript and first-message
-  summary state for the interactive prototype
+- `internal/query` — canonical conversation history, model streaming, explicit
+  terminal outcomes, active cancellation, and a bounded generic tool-use loop
+- `internal/session` — UI-independent visible transcript and first-message summary
+  state for the interactive TUI
 - `internal/tui` — Bubble Tea v2 source-style flowing header and transcript,
   growing multiline composer, adaptive color handling, inline resize handling,
-  and local echo presentation using native terminal scrollback
-- `cmd/code-cli` — executable entrypoint for the initial local echo TUI
+  streamed assistant presentation, and active Ctrl+C cancellation using native
+  terminal scrollback
+- `cmd/code-cli` — model-backed executable composition with concrete tools disabled
+  and denied by default
 
 The concrete registry exposes a stable six-tool order, defensive definition
 copies, exact case-sensitive canonical and alias lookup, strict raw JSON
@@ -207,47 +211,60 @@ persistent cwd or shell sessions, profile/environment snapshot generation,
 generic output-file persistence, PTY or interactive stdin forwarding,
 query-loop integration, telemetry, and feature flags.
 
-Full permission UI, CLI registration, session-global storage, proxy/mTLS
-application wiring, generic oversized-result persistence, concrete Brief UI and
-upload transport, feature gating, query-loop registration, conversation
-recovery, and other UI, session-transport, OAuth, control-plane, telemetry, and
-repository helpers are intentionally excluded from this reduced module.
+Full permission UI, concrete registry enablement, session-global storage,
+proxy/mTLS application wiring, generic oversized-result persistence, concrete
+Brief UI and upload transport, feature gating, conversation recovery, and other
+session-transport, OAuth, control-plane, telemetry, and repository helpers are
+intentionally excluded from this reduced module.
 
-## Interactive TUI prototype
+## Interactive model-backed TUI
 
-The repository now includes a Bubble Tea v2 application that follows the source
-default non-fullscreen layout: a Claude Code identity header, complete transcript,
-prompt composer, and shortcuts footer rendered sequentially in the terminal:
+The repository includes a Bubble Tea v2 application that follows the source default
+non-fullscreen layout: a Claude Code identity header, visible transcript, prompt
+composer, and shortcuts footer rendered sequentially in the terminal:
 
 ```bash
 go run ./cmd/code-cli
 ```
 
-This first vertical slice is deliberately local and deterministic:
+At runtime, the executable resolves the model from `ANTHROPIC_MODEL`, falling back
+to `core.DefaultModel`, constructs the official Anthropic SDK client, and streams
+Messages API output into the TUI. Authentication follows the SDK's environment
+behavior; credentials are not copied into the system prompt, transcript, or visible
+TUI configuration. Running the executable therefore requires network access and a
+credential source accepted by the SDK.
 
 - Enter submits the current message; Shift+Enter inserts a newline.
 - The composer grows with multiline and wrapped input without the fullscreen-only
   half-screen cap; larger content pushes earlier output into terminal scrollback.
 - Bubble Tea runs inline rather than in the alternate screen. The visible title,
-  complete transcript, composer, and footer flow through native terminal scrollback
-  instead of occupying fixed screen regions.
+  transcript, composer, and footer flow through native terminal scrollback instead
+  of occupying fixed screen regions.
 - The open-sided prompt border, header, transcript, and footer use source-derived
   colors that adapt to light/dark terminal backgrounds and color capabilities.
-- User and assistant rows use the source-style `❯` and `●` markers.
-- The local agent immediately echoes the submitted text, including multiline text.
-- The first valid user message remains the in-memory session summary and becomes
-  the terminal/window title; the visible identity header remains unchanged.
-- No Anthropic request, credential lookup, tool execution, or network access occurs.
-- Ctrl+C exits the TUI.
-
-The TUI framework is separated from `internal/session`, so a future model-backed
-responder can replace the synchronous echo without moving transcript ownership into
-the terminal renderer. Streaming, permissions, tools, persistence, and generated
-conversation titles are not implemented by this prototype.
+- User and assistant rows use the source-style `❯` and `●` markers. Assistant text
+  appears incrementally as model stream deltas arrive.
+- `internal/query.Engine` owns canonical API history, including assistant content
+  and any hidden tool-result or injected messages. `internal/session` separately
+  owns only the user-visible transcript and first-message window-title summary.
+- A submission ends with an explicit outcome such as `end_turn`, `max_tokens`,
+  `stop_sequence`, `pause_turn`, `refusal`, `canceled`, `tool_turn_limit`, or
+  `failed`.
+- Ctrl+C cancels an active request and keeps the TUI open; when no request is active,
+  Ctrl+C exits.
+- The generic query engine supports a bounded tool-use loop, with eight tool turns
+  by default. The executable deliberately supplies `query.NoTools` and
+  `query.DenyAll`: it does not advertise, authorize, or execute the concrete Bash,
+  Grep, WebFetch, WebSearch, SendUserMessage, or Skill registry.
+- Persistence, permission prompts, generated conversation titles, and concrete tool
+  enablement remain outside this executable composition.
 
 ## Development
 
-Tests use deterministic fixtures and do not require live Claude API credentials.
+Tests use injected deterministic clients and fixtures: they make no live Claude
+requests, require no API credentials, and are expected to run offline. This differs
+from `go run ./cmd/code-cli`, whose model-backed runtime performs Anthropic API
+network requests.
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go mod tidy

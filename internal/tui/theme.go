@@ -15,6 +15,8 @@ type palette struct {
 	subtle                color.Color
 	userMessageBackground color.Color
 	claude                color.Color
+	clawdBackground       color.Color
+	error                 color.Color
 }
 
 func newPalette(dark bool, profile colorprofile.Profile) palette {
@@ -25,7 +27,12 @@ func newPalette(dark bool, profile colorprofile.Profile) palette {
 		inactive:              completeColor(profile, lightDark(ansi.BrightBlack, ansi.White), lightDark(lipgloss.Color("#666666"), lipgloss.Color("#999999"))),
 		subtle:                completeColor(profile, lightDark(ansi.BrightBlack, ansi.White), lightDark(lipgloss.Color("#afafaf"), lipgloss.Color("#505050"))),
 		userMessageBackground: completeColor(profile, lightDark(ansi.White, ansi.BrightBlack), lightDark(lipgloss.Color("#f0f0f0"), lipgloss.Color("#373737"))),
-		claude:                completeColor(profile, ansi.BrightRed, lipgloss.Color("#d77757")),
+		// Source clawd_body / claude orange.
+		claude: completeColor(profile, ansi.BrightRed, lipgloss.Color("#d77757")),
+		// Source clawd_background is always black so the eye block reads as pupils.
+		clawdBackground: completeColor(profile, ansi.Black, lipgloss.Color("#000000")),
+		// Source dark theme error is rgb(255,107,128); light is rgb(171,43,63).
+		error: completeColor(profile, ansi.Red, lightDark(lipgloss.Color("#ab2b3f"), lipgloss.Color("#ff6b80"))),
 	}
 }
 

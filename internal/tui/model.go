@@ -2,7 +2,9 @@
 package tui
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -15,38 +17,80 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"code-cli/internal/core"
+	"code-cli/internal/query"
 	"code-cli/internal/session"
 )
 
-var ErrNilSession = errors.New("session is nil")
+var (
+	ErrNilSession     = errors.New("session is nil")
+	ErrNilResponder   = errors.New("tui responder is unavailable")
+	ErrResponderEnded = errors.New("tui responder ended without completion")
+)
 
 const (
 	defaultWidth         = 80
 	maxInputContentLines = 9999
-	clawdMark            = " ▐▛███▜▌\n▝▜█████▛▘\n  ▘▘ ▝▝"
+	queryEventBuffer     = 32
+
+	// Source Clawd default pose segments (9 cols wide).
+	clawdR1Left  = " ▐"
+	clawdR1Eyes  = "▛███▜"
+	clawdR1Right = "▌"
+	clawdR2Left  = "▝▜"
+	clawdR2Mid   = "█████"
+	clawdR2Right = "▛▘"
+	clawdR3      = "  ▘▘ ▝▝  "
+	clawdWidth   = 9
+	// CondensedLogo reserves clawd (11) + gap (2) + padding (2) ≈ 15 columns.
+	headerInfoReserve = 15
+	headerGap         = 2
+
+	// Source transcript auth failure (AssistantTextMessage / INVALID_API_KEY_ERROR_MESSAGE).
+	notLoggedInMessage = "Not logged in · Please run /login"
+	// Source footer notification wording (Notifications.tsx) differs slightly.
+	notLoggedInFooter = "Not logged in · Run /login"
 )
 
-// Config supplies the visible host metadata used by the condensed source-style header.
+// Responder is the UI-independent asynchronous query boundary used by Model.
+type Responder interface {
+	SubmitEvents(context.Context, core.Message, int) <-chan query.Event
+}
+
+// Config supplies the responder and visible host metadata used by the condensed source-style header.
 type Config struct {
+	Responder        Responder
 	Version          string
 	Model            string
 	WorkingDirectory string
 	Agent            string
 }
 
-// Model is the Bubble Tea model for the local echo TUI.
+// Model is the Bubble Tea model for the streamed query TUI.
 type Model struct {
 	session        *session.Session
+	responder      Responder
 	config         Config
 	input          textarea.Model
 	width          int
 	darkBackground bool
 	colorProfile   colorprofile.Profile
 	palette        palette
+	busy           bool
+	status         string
+	transient      string
+	cancel         context.CancelFunc
+	canceling      bool
 	err            error
 }
 
+type queryEventMsg struct {
+	event  query.Event
+	events <-chan query.Event
+	ok     bool
+}
+
 // New constructs a source-style TUI with local default metadata.
+// A host must use NewWithConfig to supply a responder.
 func New(sessionState *session.Session) (Model, error) {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -54,15 +98,17 @@ func New(sessionState *session.Session) (Model, error) {
 	}
 	return NewWithConfig(sessionState, Config{
 		Version:          "dev",
-		Model:            "Local echo",
 		WorkingDirectory: workingDirectory,
 	})
 }
 
-// NewWithConfig constructs a TUI with explicit display metadata.
+// NewWithConfig constructs a TUI with an injected responder and explicit display metadata.
 func NewWithConfig(sessionState *session.Session, config Config) (Model, error) {
 	if sessionState == nil {
 		return Model{}, ErrNilSession
+	}
+	if config.Responder == nil {
+		return Model{}, ErrNilResponder
 	}
 	config = withConfigDefaults(config)
 
@@ -82,6 +128,7 @@ func NewWithConfig(sessionState *session.Session, config Config) (Model, error) 
 
 	model := Model{
 		session:        sessionState,
+		responder:      config.Responder,
 		config:         config,
 		input:          input,
 		width:          defaultWidth,
@@ -95,9 +142,14 @@ func NewWithConfig(sessionState *session.Session, config Config) (Model, error) 
 	return model, nil
 }
 
-// Run starts the inline local echo TUI.
+// Run starts the inline TUI. It returns ErrNilResponder until a host supplies one.
 func Run(sessionState *session.Session) error {
-	model, err := New(sessionState)
+	return RunWithConfig(sessionState, Config{})
+}
+
+// RunWithConfig starts the inline TUI with an injected responder and host metadata.
+func RunWithConfig(sessionState *session.Session, config Config) error {
+	model, err := NewWithConfig(sessionState, config)
 	if err != nil {
 		return err
 	}
@@ -117,17 +169,32 @@ func (model Model) Init() tea.Cmd {
 	})
 }
 
-// Update handles terminal events and synchronous local echo responses.
+// Update serializes terminal input and asynchronous responder events.
 func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.KeyPressMsg:
 		if message.Code == 'c' && message.Mod == tea.ModCtrl {
+			if model.busy {
+				if model.canceling {
+					return model, tea.Quit
+				}
+				model.canceling = true
+				if model.cancel != nil {
+					model.cancel()
+				}
+				model.status = "Canceling…"
+				return model, nil
+			}
 			return model, tea.Quit
 		}
-		if message.Code == tea.KeyEnter && message.Mod == 0 {
-			model.submit()
+		if model.busy {
 			return model, nil
 		}
+		if message.Code == tea.KeyEnter && message.Mod == 0 {
+			return model, model.submit()
+		}
+	case queryEventMsg:
+		return model.handleQueryEvent(message)
 	case tea.WindowSizeMsg:
 		model.resize(message.Width)
 		return model, nil
@@ -157,19 +224,162 @@ func (model Model) View() tea.View {
 	return view
 }
 
-func (model *Model) submit() {
+func (model *Model) submit() tea.Cmd {
 	entry, err := model.session.AppendUser(model.input.Value())
 	if err != nil {
-		return
+		return nil
 	}
-	if err := model.session.AppendAssistant(entry.Text); err != nil {
-		model.err = err
-		return
-	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	model.busy = true
+	model.status = "Thinking…"
+	model.transient = ""
+	model.cancel = cancel
+	model.canceling = false
 	model.err = nil
 	model.input.Reset()
-	model.input.Focus()
+	model.input.Blur()
 	model.configureInputGeometry()
+
+	return startQuery(model.responder, ctx, core.UserMessage(entry.Text))
+}
+
+func startQuery(responder Responder, ctx context.Context, message core.Message) tea.Cmd {
+	return func() tea.Msg {
+		events := responder.SubmitEvents(ctx, message, queryEventBuffer)
+		return receiveQueryEvent(events)
+	}
+}
+
+func nextQueryEvent(events <-chan query.Event) tea.Cmd {
+	return func() tea.Msg {
+		return receiveQueryEvent(events)
+	}
+}
+
+func receiveQueryEvent(events <-chan query.Event) queryEventMsg {
+	if events == nil {
+		return queryEventMsg{}
+	}
+	event, ok := <-events
+	return queryEventMsg{event: event, events: events, ok: ok}
+}
+
+func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd) {
+	if !model.busy {
+		return *model, nil
+	}
+	if !message.ok {
+		if model.canceling {
+			model.finishQuery(nil)
+		} else {
+			model.finishQuery(ErrResponderEnded)
+		}
+		return *model, model.input.Focus()
+	}
+
+	switch message.event.Type {
+	case query.EventStream:
+		if stream := message.event.Stream; stream != nil &&
+			stream.Type == "content_block_delta" && stream.Delta != nil && stream.Delta.Type == "text_delta" {
+			model.transient += stream.Delta.Text
+		}
+	case query.EventAssistantMessage:
+		model.transient = ""
+		if text := visibleAssistantText(message.event.Message); text != "" {
+			if err := model.session.AppendAssistant(text); err != nil {
+				model.err = err
+			}
+		}
+	case query.EventCompleted:
+		model.finishQuery(completionError(message.event))
+		return *model, model.input.Focus()
+	}
+	return *model, nextQueryEvent(message.events)
+}
+
+func (model *Model) finishQuery(err error) {
+	if model.cancel != nil {
+		model.cancel()
+	}
+	model.busy = false
+	model.status = ""
+	model.transient = ""
+	model.cancel = nil
+	model.canceling = false
+	model.err = nil
+	if err != nil {
+		// Source maps auth failures into assistant transcript errors rather than
+		// leaving raw SDK text in the composer status area.
+		if text := userVisibleQueryError(err); text != "" {
+			if appendErr := model.session.AppendError(text); appendErr != nil {
+				model.err = appendErr
+			}
+		} else {
+			model.err = err
+		}
+	}
+	model.configureInputGeometry()
+}
+
+func completionError(event query.Event) error {
+	if event.Result != nil && event.Result.Outcome == query.OutcomeCanceled {
+		return nil
+	}
+	if event.Err != nil {
+		return event.Err
+	}
+	if event.Result == nil {
+		return nil
+	}
+	switch event.Result.Outcome {
+	case query.OutcomeEndTurn, query.OutcomeStopSequence, query.OutcomeCanceled:
+		return nil
+	case query.OutcomeMaxTokens,
+		query.OutcomeRefusal,
+		query.OutcomePauseTurn,
+		query.OutcomeToolTurnLimit,
+		query.OutcomeFailed:
+		return fmt.Errorf("query ended with %s", event.Result.Outcome)
+	default:
+		return nil
+	}
+}
+
+// userVisibleQueryError maps normalized query failures to source-aligned transcript text.
+// Returns empty when the error should stay as a generic composer status.
+func userVisibleQueryError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if apiErr, ok := errors.AsType[*core.APIError](err); ok && apiErr != nil {
+		switch apiErr.Kind {
+		case core.APIErrorAuth, core.APIErrorPermission:
+			return notLoggedInMessage
+		}
+	}
+	// Defense in depth for classification gaps (wrapped SDK strings before ClassifyError).
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "no anthropic credentials found") ||
+		strings.Contains(lower, "authentication_error") ||
+		strings.Contains(lower, "invalid x-api-key") ||
+		strings.Contains(lower, "x-api-key") {
+		return notLoggedInMessage
+	}
+	return ""
+}
+
+func visibleAssistantText(message *core.Message) string {
+	if message == nil {
+		return ""
+	}
+	var text strings.Builder
+	for _, block := range message.Content {
+		if block.Type == core.ContentBlockText {
+			text.WriteString(block.Text)
+		}
+	}
+	return text.String()
 }
 
 func (model *Model) resize(width int) {
@@ -224,29 +434,55 @@ func (model Model) renderHeader() []string {
 		return []string{lipgloss.NewStyle().Bold(true).Foreground(model.palette.text).Render(title)}
 	}
 
-	infoWidth := max(16, model.width-15)
-	modelLabel := truncateDisplay(model.config.Model, infoWidth)
-	cwd := truncateDisplay(model.config.WorkingDirectory, infoWidth)
+	// CondensedLogo: textWidth = max(columns - 15, 20)
+	textWidth := max(20, model.width-headerInfoReserve)
+	// "Claude Code v" is 13 runes; version is truncated to fit.
+	version := truncateDisplay(model.config.Version, max(6, textWidth-13))
+	modelLabel := truncateDisplay(model.config.Model, textWidth)
+	cwd := model.config.WorkingDirectory
 	if model.config.Agent != "" {
-		cwd = "@" + truncateDisplay(model.config.Agent, max(1, infoWidth-2)) + " · " + cwd
+		// "@agent · " overhead is 1 + agent + 3 separators.
+		agentWidth := runewidth.StringWidth(model.config.Agent)
+		cwdWidth := max(10, textWidth-1-agentWidth-3)
+		cwd = "@" + model.config.Agent + " · " + truncateDisplay(cwd, cwdWidth)
+	} else {
+		cwd = truncateDisplay(cwd, textWidth)
 	}
 
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(model.palette.text)
+	// Source uses dimColor for version, model, and cwd (not mixed inactive/subtle).
+	dimStyle := lipgloss.NewStyle().Foreground(model.palette.inactive)
 	info := []string{
-		lipgloss.NewStyle().Bold(true).Foreground(model.palette.text).Render("Claude Code v" + model.config.Version),
-		lipgloss.NewStyle().Foreground(model.palette.inactive).Render(modelLabel),
-		lipgloss.NewStyle().Foreground(model.palette.subtle).Render(cwd),
+		titleStyle.Render("Claude Code") + " " + dimStyle.Render("v"+version),
+		dimStyle.Render(modelLabel),
+		dimStyle.Render(cwd),
 	}
-	markStyle := lipgloss.NewStyle().Foreground(model.palette.claude)
-	markLines := strings.Split(clawdMark, "\n")
+
+	markLines := model.renderClawd()
+	// Source Box gap={2}; pad after the 9-col mark so total clawd+gap ≈ 11.
+	gap := strings.Repeat(" ", headerGap)
 	lines := make([]string, len(markLines))
 	for index, mark := range markLines {
-		value := markStyle.Render(mark)
+		value := mark + gap
 		if index < len(info) {
-			value += strings.Repeat(" ", max(2, 11-runewidth.StringWidth(mark))) + info[index]
+			value += info[index]
 		}
 		lines[index] = value
 	}
 	return lines
+}
+
+// renderClawd matches source Clawd default pose with body + eye background colors.
+func (model Model) renderClawd() []string {
+	body := lipgloss.NewStyle().Foreground(model.palette.claude)
+	eyes := lipgloss.NewStyle().
+		Foreground(model.palette.claude).
+		Background(model.palette.clawdBackground)
+	return []string{
+		body.Render(clawdR1Left) + eyes.Render(clawdR1Eyes) + body.Render(clawdR1Right),
+		body.Render(clawdR2Left) + eyes.Render(clawdR2Mid) + body.Render(clawdR2Right),
+		body.Render(clawdR3),
+	}
 }
 
 func (model Model) renderPrompt() []string {
@@ -263,8 +499,13 @@ func (model Model) renderPrompt() []string {
 		}
 		inputRows[index] = padDisplay(row, model.width)
 	}
+	if model.status != "" {
+		status := lipgloss.NewStyle().Foreground(model.palette.inactive).Render("  " + model.status)
+		inputRows = append(inputRows, padDisplay(status, model.width))
+	}
+	// Non-auth failures still surface under the composer; auth is transcript-only.
 	if model.err != nil {
-		status := lipgloss.NewStyle().Foreground(model.palette.inactive).Render("  Error: " + model.err.Error())
+		status := lipgloss.NewStyle().Foreground(model.palette.error).Render("  Error: " + model.err.Error())
 		inputRows = append(inputRows, padDisplay(status, model.width))
 	}
 
@@ -278,13 +519,59 @@ func (model Model) renderPrompt() []string {
 }
 
 func (model Model) renderFooter() []string {
-	hint := lipgloss.NewStyle().Foreground(model.palette.inactive).Render("? for shortcuts")
-	return []string{padDisplay("  "+hint, model.width)}
+	// Source PromptInputFooter: suppressHint when input.length > 0.
+	left := ""
+	if !model.busy && strings.TrimSpace(model.input.Value()) == "" {
+		left = lipgloss.NewStyle().Foreground(model.palette.inactive).Render("? for shortcuts")
+	}
+
+	// Source Notifications: right-side auth notice when credentials are missing.
+	// Detect via transcript error entries (no live credential probe in this rewrite).
+	right := ""
+	if model.hasAuthTranscriptError() {
+		right = lipgloss.NewStyle().Foreground(model.palette.error).Render(notLoggedInFooter)
+	}
+
+	if left == "" && right == "" {
+		return nil
+	}
+	if right == "" {
+		return []string{padDisplay("  "+left, model.width)}
+	}
+	if left == "" {
+		return []string{padDisplay(alignRight(right, model.width), model.width)}
+	}
+	// Space-separated left/right byline when both fit.
+	gap := model.width - 2 - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return []string{padDisplay("  "+left, model.width)}
+	}
+	return []string{"  " + left + strings.Repeat(" ", gap) + right}
+}
+
+func (model Model) hasAuthTranscriptError() bool {
+	for _, entry := range model.session.Entries() {
+		if entry.Style == session.EntryStyleError && entry.Text == notLoggedInMessage {
+			return true
+		}
+	}
+	return false
+}
+
+func alignRight(value string, width int) string {
+	w := lipgloss.Width(value)
+	if width <= 0 {
+		return ""
+	}
+	if w >= width {
+		return ansi.Truncate(value, width, "")
+	}
+	return strings.Repeat(" ", width-w) + value
 }
 
 func (model Model) renderTranscript() []string {
 	entries := model.session.Entries()
-	if len(entries) == 0 {
+	if len(entries) == 0 && model.transient == "" {
 		return nil
 	}
 
@@ -293,40 +580,55 @@ func (model Model) renderTranscript() []string {
 		if index > 0 {
 			builder.WriteString("\n\n")
 		}
-		switch entry.Role {
-		case core.RoleUser:
+		switch {
+		case entry.Style == session.EntryStyleError:
+			model.renderErrorEntry(&builder, entry.Text)
+		case entry.Role == core.RoleUser:
 			model.renderUserEntry(&builder, entry.Text)
-		case core.RoleAssistant:
+		case entry.Role == core.RoleAssistant:
 			model.renderAssistantEntry(&builder, entry.Text)
 		default:
 			model.renderOtherEntry(&builder, string(entry.Role)+": "+entry.Text)
 		}
 	}
+	if model.transient != "" {
+		if len(entries) > 0 {
+			builder.WriteString("\n\n")
+		}
+		model.renderAssistantEntry(&builder, model.transient)
+	}
 	return strings.Split(builder.String(), "\n")
 }
 
 func (model Model) renderUserEntry(builder *strings.Builder, text string) {
+	// Source UserPromptMessage + HighlightedThinkingText: full-width
+	// userMessageBackground with a subtle ❯ pointer (not the composer marker color).
 	style := lipgloss.NewStyle().
 		Foreground(model.palette.text).
+		Background(model.palette.userMessageBackground)
+	// Source HighlightedThinkingText uses figures.pointer + regular space.
+	pointer := lipgloss.NewStyle().
+		Foreground(model.palette.subtle).
 		Background(model.palette.userMessageBackground).
-		Width(model.width)
-	model.renderMessageLines(builder, text, "❯ ", style)
+		Render("❯ ")
+	model.renderPrefixedEntry(builder, text, pointer, style, true)
 }
 
 func (model Model) renderAssistantEntry(builder *strings.Builder, text string) {
+	// Source AssistantTextMessage: BLACK_CIRCLE with minWidth 2 gutter.
 	style := lipgloss.NewStyle().Foreground(model.palette.text)
-	model.renderMessageLines(builder, text, "● ", style)
+	pointer := lipgloss.NewStyle().Foreground(model.palette.text).Render("● ")
+	model.renderPrefixedEntry(builder, text, pointer, style, false)
 }
 
-func (model Model) renderOtherEntry(builder *strings.Builder, text string) {
-	style := lipgloss.NewStyle().Foreground(model.palette.inactive)
-	model.renderMessageLines(builder, text, "", style)
-}
-
-func (model Model) renderMessageLines(builder *strings.Builder, text, firstPrefix string, style lipgloss.Style) {
-	gutterWidth := 2
-	if model.width < 3 {
+// renderErrorEntry matches source MessageResponse: dim "  ⎿ " plus error-colored text.
+func (model Model) renderErrorEntry(builder *strings.Builder, text string) {
+	prefix := lipgloss.NewStyle().Foreground(model.palette.inactive).Render("  ⎿ ")
+	style := lipgloss.NewStyle().Foreground(model.palette.error)
+	gutterWidth := lipgloss.Width(prefix)
+	if model.width < gutterWidth+1 {
 		gutterWidth = 0
+		prefix = ""
 	}
 	contentWidth := max(1, model.width-gutterWidth)
 	lines := wrapDisplay(text, contentWidth)
@@ -334,11 +636,50 @@ func (model Model) renderMessageLines(builder *strings.Builder, text, firstPrefi
 		if index > 0 {
 			builder.WriteByte('\n')
 		}
-		prefix := strings.Repeat(" ", gutterWidth)
-		if index == 0 && gutterWidth > 0 {
-			prefix = firstPrefix
+		if index == 0 {
+			builder.WriteString(prefix)
+			builder.WriteString(style.Render(line))
+			continue
 		}
-		builder.WriteString(style.Render(prefix + line))
+		builder.WriteString(style.Render(strings.Repeat(" ", gutterWidth) + line))
+	}
+}
+
+func (model Model) renderOtherEntry(builder *strings.Builder, text string) {
+	style := lipgloss.NewStyle().Foreground(model.palette.inactive)
+	model.renderPrefixedEntry(builder, text, "", style, false)
+}
+
+// renderPrefixedEntry wraps text with a first-line marker and a fixed 2-col gutter.
+// fullWidth pads each rendered line to the terminal width (user message background).
+func (model Model) renderPrefixedEntry(builder *strings.Builder, text, firstPrefix string, style lipgloss.Style, fullWidth bool) {
+	gutterWidth := 2
+	if model.width < 3 {
+		gutterWidth = 0
+		firstPrefix = ""
+	}
+	contentWidth := max(1, model.width-gutterWidth)
+	lines := wrapDisplay(text, contentWidth)
+	for index, line := range lines {
+		if index > 0 {
+			builder.WriteByte('\n')
+		}
+		var rendered string
+		if index == 0 && firstPrefix != "" {
+			rendered = firstPrefix + style.Render(line)
+		} else if gutterWidth > 0 {
+			rendered = style.Render(strings.Repeat(" ", gutterWidth) + line)
+		} else {
+			rendered = style.Render(line)
+		}
+		if fullWidth {
+			// Paint the remaining columns with the user message background.
+			pad := max(0, model.width-lipgloss.Width(rendered))
+			if pad > 0 {
+				rendered += style.Render(strings.Repeat(" ", pad))
+			}
+		}
+		builder.WriteString(rendered)
 	}
 }
 
@@ -355,7 +696,7 @@ func withConfigDefaults(config Config) Config {
 		config.Version = "dev"
 	}
 	if config.Model == "" {
-		config.Model = "Local echo"
+		config.Model = "Claude"
 	}
 	return config
 }
@@ -383,4 +724,7 @@ func padDisplay(value string, width int) string {
 	return value + strings.Repeat(" ", max(0, width-lipgloss.Width(value)))
 }
 
-var _ tea.Model = Model{}
+var (
+	_ tea.Model = Model{}
+	_ Responder = (*query.Engine)(nil)
+)

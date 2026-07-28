@@ -3,6 +3,7 @@ package anthropicapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"code-cli/internal/core"
@@ -75,6 +76,48 @@ func TestClassifyErrorUnknown(t *testing.T) {
 		t.Fatalf("unknown classified as %#v", got)
 	}
 }
+
+func TestClassifyErrorNoCredentials(t *testing.T) {
+	// Mimic the official SDK's internal auth.NoCredentialsError without importing it.
+	err := &NoCredentialsError{detail: "no Anthropic credentials found. The SDK tried these sources in order:"}
+	got := ClassifyError(err)
+	if got.Kind != core.APIErrorAuth || got.Retryable {
+		t.Fatalf("no credentials classified as %#v", got)
+	}
+	if !errors.Is(got, err) {
+		t.Fatalf("cause not preserved: %#v", got)
+	}
+
+	wrapped := fmt.Errorf("stream: %w", err)
+	got = ClassifyError(wrapped)
+	if got.Kind != core.APIErrorAuth {
+		t.Fatalf("wrapped no credentials classified as %#v", got)
+	}
+}
+
+func TestClassifyErrorAuthenticationSDKType(t *testing.T) {
+	err := &struct {
+		*fakeSDKError
+		StatusCode int
+	}{
+		fakeSDKError: &fakeSDKError{
+			errorType: shared.ErrorTypeAuthenticationError,
+			raw:       `{"error":{"message":"invalid x-api-key"}}`,
+		},
+		StatusCode: 401,
+	}
+	got := ClassifyError(err)
+	if got.Kind != core.APIErrorAuth || got.StatusCode != 401 {
+		t.Fatalf("authentication_error classified as %#v", got)
+	}
+}
+
+// NoCredentialsError mirrors the SDK internal type name used by isNoCredentialsError.
+type NoCredentialsError struct {
+	detail string
+}
+
+func (e *NoCredentialsError) Error() string { return e.detail }
 
 type timeoutError struct{}
 

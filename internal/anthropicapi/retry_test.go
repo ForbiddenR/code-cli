@@ -67,8 +67,8 @@ func TestRetryAPINonRetryableErrorDoesNotRetry(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	var apiErr *core.APIError
-	if !errors.As(err, &apiErr) || apiErr.Kind != core.APIErrorUnknown || apiErr.Retryable {
+	apiErr, ok := errors.AsType[*core.APIError](err)
+	if !ok || apiErr.Kind != core.APIErrorUnknown || apiErr.Retryable {
 		t.Fatalf("error = %#v", err)
 	}
 }
@@ -83,8 +83,8 @@ func TestRetryAPIContextCancellationDuringBackoff(t *testing.T) {
 	}, func(context.Context, int) (string, error) {
 		return "", &core.APIError{Kind: core.APIErrorTimeout, Message: "timeout", Retryable: true}
 	})
-	var apiErr *core.APIError
-	if !errors.As(err, &apiErr) || apiErr.Kind != core.APIErrorAbort || apiErr.Retryable {
+	apiErr, ok := errors.AsType[*core.APIError](err)
+	if !ok || apiErr.Kind != core.APIErrorAbort || apiErr.Retryable {
 		t.Fatalf("error = %#v", err)
 	}
 }

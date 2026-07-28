@@ -67,3 +67,23 @@ func TestNilSessionAccessors(t *testing.T) {
 		t.Fatal("nil Entries() should be nil")
 	}
 }
+
+func TestSessionAppendErrorDoesNotChangeSummary(t *testing.T) {
+	session := New()
+	if _, err := session.AppendUser("question"); err != nil {
+		t.Fatalf("AppendUser() error = %v", err)
+	}
+	if err := session.AppendError("Not logged in · Please run /login"); err != nil {
+		t.Fatalf("AppendError() error = %v", err)
+	}
+	if got, want := session.Summary(), "question"; got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+	entries := session.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("Entries() length = %d, want 2", len(entries))
+	}
+	if entries[1] != (Entry{Role: core.RoleAssistant, Text: "Not logged in · Please run /login", Style: EntryStyleError}) {
+		t.Fatalf("error entry = %#v", entries[1])
+	}
+}

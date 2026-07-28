@@ -26,8 +26,7 @@ func ClassifyError(err error) *core.APIError {
 		return nil
 	}
 
-	var normalized *core.APIError
-	if errors.As(err, &normalized) {
+	if normalized, ok := errors.AsType[*core.APIError](err); ok {
 		return normalized
 	}
 
@@ -48,8 +47,18 @@ func ClassifyError(err error) *core.APIError {
 		}
 	}
 
-	var apiErr sdkAPIError
-	if errors.As(err, &apiErr) {
+	// The official SDK's missing-credential error lives in an internal package,
+	// so detect it by type name / message rather than importing that package.
+	if isNoCredentialsError(err) {
+		return &core.APIError{
+			Kind:      core.APIErrorAuth,
+			Message:   err.Error(),
+			Retryable: false,
+			Cause:     err,
+		}
+	}
+
+	if apiErr, ok := errors.AsType[sdkAPIError](err); ok {
 		statusCode := intField(apiErr, "StatusCode")
 		requestID := stringField(apiErr, "RequestID")
 		message, responseRequestID := apiErrorMessage(apiErr)
@@ -67,8 +76,7 @@ func ClassifyError(err error) *core.APIError {
 		}
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		kind := core.APIErrorNetwork
 		if netErr.Timeout() {
 			kind = core.APIErrorTimeout
@@ -87,6 +95,24 @@ func ClassifyError(err error) *core.APIError {
 		Retryable: false,
 		Cause:     err,
 	}
+}
+
+func isNoCredentialsError(err error) bool {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		typeName := reflect.TypeOf(current)
+		if typeName != nil {
+			if typeName.Kind() == reflect.Pointer {
+				typeName = typeName.Elem()
+			}
+			if typeName.Name() == "NoCredentialsError" {
+				return true
+			}
+		}
+		if strings.Contains(strings.ToLower(current.Error()), "no anthropic credentials found") {
+			return true
+		}
+	}
+	return false
 }
 
 func apiErrorMessage(err sdkAPIError) (message string, requestID string) {

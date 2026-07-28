@@ -10,10 +10,21 @@ import (
 
 var ErrBlankMessage = errors.New("message is blank")
 
+// EntryStyle controls transcript rendering for an entry.
+type EntryStyle string
+
+const (
+	// EntryStyleDefault is normal user/assistant text.
+	EntryStyleDefault EntryStyle = ""
+	// EntryStyleError renders an assistant-style API error (source MessageResponse).
+	EntryStyleError EntryStyle = "error"
+)
+
 // Entry is one normalized conversation entry.
 type Entry struct {
-	Role core.Role
-	Text string
+	Role  core.Role
+	Text  string
+	Style EntryStyle
 }
 
 // Session owns the transcript and the summary for one interactive session.
@@ -46,6 +57,18 @@ func (session *Session) AppendAssistant(text string) error {
 	if err != nil {
 		return err
 	}
+	session.entries = append(session.entries, entry)
+	return nil
+}
+
+// AppendError adds a transcript API-error entry without changing the summary.
+// These match the source assistant isApiErrorMessage path and are not composer status.
+func (session *Session) AppendError(text string) error {
+	entry, err := newEntry(core.RoleAssistant, text)
+	if err != nil {
+		return err
+	}
+	entry.Style = EntryStyleError
 	session.entries = append(session.entries, entry)
 	return nil
 }

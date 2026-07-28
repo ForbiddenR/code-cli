@@ -172,6 +172,16 @@ func TestRegistryEnabledViewsAndDisabledDispatch(t *testing.T) {
 	if _, err := registry.Execute(context.Background(), "WebSearch", json.RawMessage(`not-json`), ExecuteOptions{}); !errors.Is(err, ErrToolDisabled) {
 		t.Fatalf("disabled WebSearch error = %v", err)
 	}
+	if _, err := registry.Classify("WebSearch", json.RawMessage(`not-json`)); !errors.Is(err, ErrToolDisabled) {
+		t.Fatalf("disabled WebSearch classification error = %v", err)
+	}
+	classification, err := registry.Classify("Grep", json.RawMessage(`{"pattern":"match"}`))
+	if err != nil || !classification.ReadOnly || !classification.ConcurrencySafe {
+		t.Fatalf("Grep classification = %#v, %v", classification, err)
+	}
+	if _, err := registry.Classify("missing", json.RawMessage(`{}`)); !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf("missing classification error = %v", err)
+	}
 
 	executed := false
 	disabled := buildTool(toolSpec{
