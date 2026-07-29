@@ -18,7 +18,7 @@ const (
 	EntryStyleDefault EntryStyle = ""
 	// EntryStyleError renders an assistant-style API error (source MessageResponse).
 	EntryStyleError EntryStyle = "error"
-	// EntryStyleTurnDuration renders the persisted completion row for a long turn.
+	// EntryStyleTurnDuration renders the persisted completion row for a finished turn.
 	EntryStyleTurnDuration EntryStyle = "turn_duration"
 )
 

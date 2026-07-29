@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image/color"
 	"slices"
 	"strings"
@@ -287,13 +288,13 @@ func TestSpinnerGlimmerUpdatesBetweenGlyphFrames(t *testing.T) {
 	}
 }
 
-func TestCompletedLongTurnAddsPersistentFinishedTag(t *testing.T) {
+func TestCompletedTurnAddsPersistentFinishedTag(t *testing.T) {
 	events := make(chan query.Event, 1)
 	model := newTestModelWithResponder(t, &fakeResponder{channels: []<-chan query.Event{events}})
-	model.input.SetValue("long turn")
+	model.input.SetValue("one question")
 	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
-	model.turnStarted = time.Now().Add(-(12*time.Minute + 12*time.Second))
+	model.turnStarted = time.Now().Add(-16 * time.Second)
 
 	events <- query.Event{Type: query.EventCompleted, Result: &query.Result{Outcome: query.OutcomeEndTurn}}
 	model, _ = runCommand(t, model, command)
@@ -303,7 +304,7 @@ func TestCompletedLongTurnAddsPersistentFinishedTag(t *testing.T) {
 		t.Fatalf("completed entries = %#v, want user + turn duration", entries)
 	}
 	parts := strings.SplitN(entries[1].Text, " for ", 2)
-	if len(parts) != 2 || !isTurnCompletionVerb(parts[0]) || parts[1] != "12m 12s" {
+	if len(parts) != 2 || !isTurnCompletionVerb(parts[0]) || parts[1] != "16s" {
 		t.Fatalf("finished tag = %q", entries[1].Text)
 	}
 	static := ansi.Strip(model.renderStaticOutput(false, entries, 1, 2))
@@ -312,23 +313,97 @@ func TestCompletedLongTurnAddsPersistentFinishedTag(t *testing.T) {
 	}
 }
 
+func TestFinishedTagRemainsManagedUntilStaticCommit(t *testing.T) {
+	model := newTestModel(t)
+	mustAppendUser(t, model.session, "question")
+	model.headerPrinted = true
+	model.printedEntries = 1
+	model.busy = true
+	model.input.Blur()
+	model.turnGeneration = 1
+	model.turnStarted = time.Now().Add(-16 * time.Second)
+
+	updated, command := model.Update(queryEventMsg{
+		generation: model.turnGeneration,
+		ok:         true,
+		event: query.Event{
+			Type:   query.EventCompleted,
+			Result: &query.Result{Outcome: query.OutcomeEndTurn},
+		},
+	})
+	model = updated.(Model)
+	if command == nil || !model.staticQueued || model.printedEntries != 1 || model.input.Focused() {
+		t.Fatalf("finished handoff = command %v queued %v printed %d focused %v", command != nil, model.staticQueued, model.printedEntries, model.input.Focused())
+	}
+	entries := model.Session().Entries()
+	if len(entries) != 2 || entries[1].Style != session.EntryStyleTurnDuration {
+		t.Fatalf("finished entries = %#v", entries)
+	}
+	if content := ansi.Strip(model.View().Content); !strings.Contains(content, "✻ "+entries[1].Text) {
+		t.Fatalf("queued finished tag missing from live view: %q", content)
+	}
+
+	output := command().(staticOutputMsg)
+	updated, continuation := model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
+	if continuation == nil || model.staticQueued || model.printedEntries != 2 || model.input.Focused() {
+		t.Fatalf("finished commit = continuation %v queued %v printed %d focused %v", continuation != nil, model.staticQueued, model.printedEntries, model.input.Focused())
+	}
+	updated, focusCommand := model.Update(continuation())
+	model = updated.(Model)
+	if !model.input.Focused() {
+		t.Fatal("composer did not focus after static commit")
+	}
+	_ = focusCommand
+	if content := ansi.Strip(model.View().Content); strings.Contains(content, entries[1].Text) {
+		t.Fatalf("committed finished tag remained in live view: %q", content)
+	}
+}
+
+func TestPendingStaticCommitBlocksSubmitAndQuit(t *testing.T) {
+	model := newTestModel(t)
+	mustAppendUser(t, model.session, "committing")
+	model.staticQueued = true
+	model.input.SetValue("next question")
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	if command != nil || len(model.Session().Entries()) != 1 || model.input.Value() != "next question" {
+		t.Fatalf("Enter during static commit = command %v entries %#v input %q", command != nil, model.Session().Entries(), model.input.Value())
+	}
+
+	updated, command = model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if command != nil || !model.staticQueued {
+		t.Fatalf("Ctrl+C during static commit = command %v queued %v", command != nil, model.staticQueued)
+	}
+}
+
 func TestCompletedTurnDurationEligibility(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		duration  time.Duration
-		canceling bool
-		outcome   query.Outcome
-		want      bool
+		name         string
+		duration     time.Duration
+		canceling    bool
+		outcome      query.Outcome
+		withoutStart bool
+		want         bool
 	}{
-		{name: "over threshold", duration: 31 * time.Second, outcome: query.OutcomeEndTurn, want: true},
-		{name: "at threshold", duration: 30 * time.Second, outcome: query.OutcomeEndTurn},
+		{name: "short completed turn", duration: time.Second, outcome: query.OutcomeEndTurn, want: true},
+		{name: "long completed turn", duration: time.Minute, outcome: query.OutcomeEndTurn, want: true},
 		{name: "canceling", duration: time.Minute, canceling: true, outcome: query.OutcomeEndTurn},
 		{name: "canceled outcome", duration: time.Minute, outcome: query.OutcomeCanceled},
+		{name: "missing start time", outcome: query.OutcomeEndTurn, withoutStart: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			model := newTestModel(t)
 			completedAt := time.Now()
-			model.turnStarted = completedAt.Add(-test.duration)
+			if !test.withoutStart {
+				model.turnStarted = completedAt.Add(-test.duration)
+			}
 			model.canceling = test.canceling
 			event := query.Event{Result: &query.Result{Outcome: test.outcome}}
 			if got := model.shouldAppendTurnDuration(event, completedAt); got != test.want {
@@ -430,6 +505,12 @@ func TestCtrlCCancelsSilentResponderWithoutQuitting(t *testing.T) {
 	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
 	output := command().(staticOutputMsg)
+	updated, _ = model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
 	queryResult := make(chan tea.Msg, 1)
 	go func() { queryResult <- output.next() }()
 
@@ -608,11 +689,14 @@ func TestAuthFailureRendersInTranscriptNotComposer(t *testing.T) {
 		t.Fatalf("auth failure left composer error: busy=%v err=%v focused=%v", model.busy, model.err, model.input.Focused())
 	}
 	entries := model.Session().Entries()
-	if len(entries) != 2 {
-		t.Fatalf("entries = %#v, want user + error", entries)
+	if len(entries) != 3 {
+		t.Fatalf("entries = %#v, want user + turn duration + error", entries)
 	}
-	if entries[1] != (session.Entry{Role: core.RoleAssistant, Text: notLoggedInMessage, Style: session.EntryStyleError}) {
-		t.Fatalf("transcript error entry = %#v", entries[1])
+	if entries[1].Style != session.EntryStyleTurnDuration {
+		t.Fatalf("turn duration entry = %#v", entries[1])
+	}
+	if entries[2] != (session.Entry{Role: core.RoleAssistant, Text: notLoggedInMessage, Style: session.EntryStyleError}) {
+		t.Fatalf("transcript error entry = %#v", entries[2])
 	}
 
 	content := ansi.Strip(model.View().Content)
@@ -626,7 +710,7 @@ func TestAuthFailureRendersInTranscriptNotComposer(t *testing.T) {
 		t.Fatalf("auth failure still rendered in composer: %q", content)
 	}
 
-	staticError := ansi.Strip(model.renderStaticOutput(false, entries, 1, 2))
+	staticError := ansi.Strip(model.renderStaticOutput(false, entries, 2, 3))
 	if !strings.Contains(staticError, notLoggedInMessage) || !strings.Contains(staticError, "⎿") {
 		t.Fatalf("static auth transcript = %q", staticError)
 	}
@@ -682,8 +766,14 @@ func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
 
 	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	model = updated.(Model)
-	if command == nil || model.headerPrinted || model.printedEntries != 0 || !model.staticQueued || !model.queuedHeader || model.queuedEntryCount != 1 {
-		t.Fatalf("submit static state = printed header %v entries %d queued %v queued header %v queued entries %d command %v", model.headerPrinted, model.printedEntries, model.staticQueued, model.queuedHeader, model.queuedEntryCount, command != nil)
+	if command == nil || model.headerPrinted || model.printedEntries != 0 || !model.staticQueued {
+		t.Fatalf("submit static state = printed header %v entries %d queued %v command %v", model.headerPrinted, model.printedEntries, model.staticQueued, command != nil)
+	}
+	queuedView := ansi.Strip(model.View().Content)
+	for _, want := range []string{"Claude Code", "hello"} {
+		if !strings.Contains(queuedView, want) {
+			t.Fatalf("queued view removed %q before static commit: %q", want, queuedView)
+		}
 	}
 	if len(responder.calls) != 0 {
 		t.Fatal("query started before static transcript output")
@@ -694,7 +784,7 @@ func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
 	if !ok {
 		t.Fatalf("submit command message = %T, want staticOutputMsg", message)
 	}
-	static := ansi.Strip(output.content)
+	static := ansi.Strip(renderStaticMessage(model, output))
 	for _, want := range []string{"Claude Code", "vtest", "hello"} {
 		if !strings.Contains(static, want) {
 			t.Fatalf("static output missing %q: %q", want, static)
@@ -712,6 +802,12 @@ func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
 	model = updated.(Model)
 	if !model.staticQueued || model.headerPrinted || model.printedEntries != 0 || sequence == nil {
 		t.Fatalf("scheduled static output = queued %v header %v entries %d sequence %v", model.staticQueued, model.headerPrinted, model.printedEntries, sequence != nil)
+	}
+	preCommitView := ansi.Strip(model.View().Content)
+	for _, want := range []string{"Claude Code", "hello"} {
+		if !strings.Contains(preCommitView, want) {
+			t.Fatalf("scheduled view removed %q before static commit: %q", want, preCommitView)
+		}
 	}
 
 	updated, continuation := model.Update(staticOutputCommittedMsg{
@@ -741,6 +837,93 @@ func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
 	}
 }
 
+func TestCanonicalAssistantRemainsManagedUntilStaticCommit(t *testing.T) {
+	model := newTestModel(t)
+	mustAppendUser(t, model.session, "question")
+	model.headerPrinted = true
+	model.printedEntries = 1
+	model.busy = true
+	model.status = "Working…"
+	model.turnGeneration = 1
+	model.transient = "first line\nsecond line"
+
+	assistant := core.AssistantMessage([]core.ContentBlock{core.TextBlock("first line\nsecond line")})
+	updated, command := model.Update(queryEventMsg{
+		ctx:        context.TODO(),
+		generation: model.turnGeneration,
+		ok:         true,
+		events:     make(chan query.Event),
+		event:      query.Event{Type: query.EventAssistantMessage, Message: &assistant},
+	})
+	model = updated.(Model)
+	if command == nil || !model.staticQueued || model.printedEntries != 1 || model.transient != "" {
+		t.Fatalf("queued assistant state = command %v queued %v printed %d transient %q", command != nil, model.staticQueued, model.printedEntries, model.transient)
+	}
+	queuedView := ansi.Strip(model.View().Content)
+	if !strings.Contains(queuedView, "first line\n  second line") {
+		t.Fatalf("queued assistant disappeared before commit: %q", queuedView)
+	}
+
+	message := command()
+	output, ok := message.(staticOutputMsg)
+	if !ok {
+		t.Fatalf("assistant handoff = %T, want staticOutputMsg", message)
+	}
+	updated, sequence := model.Update(output)
+	model = updated.(Model)
+	if sequence == nil || !strings.Contains(ansi.Strip(model.View().Content), "first line") {
+		t.Fatalf("assistant disappeared while print was scheduled: %q", ansi.Strip(model.View().Content))
+	}
+
+	updated, continuation := model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
+	if continuation == nil || model.staticQueued || model.printedEntries != 2 {
+		t.Fatalf("committed assistant state = continuation %v queued %v printed %d", continuation != nil, model.staticQueued, model.printedEntries)
+	}
+	if content := ansi.Strip(model.View().Content); strings.Contains(content, "first line") || strings.Contains(content, "second line") {
+		t.Fatalf("committed assistant remained in live view: %q", content)
+	}
+}
+
+func TestQueuedStaticOutputRewrapsBeforeCommit(t *testing.T) {
+	model := newTestModel(t)
+	model.resize(20)
+	mustAppendUser(t, model.session, "abcdefghijklmno")
+	command := model.queueStaticOutput(nil)
+	if command == nil || !model.staticQueued {
+		t.Fatal("queueStaticOutput() did not start a handoff")
+	}
+
+	wide := ansi.Strip(model.View().Content)
+	model.resize(10)
+	narrow := ansi.Strip(model.View().Content)
+	if wide == narrow || !strings.Contains(narrow, "\n  ijklmno") {
+		t.Fatalf("queued row did not rewrap after resize: wide=%q narrow=%q", wide, narrow)
+	}
+	if model.headerPrinted || model.printedEntries != 0 || !model.staticQueued {
+		t.Fatalf("resize advanced static markers: header=%v entries=%d queued=%v", model.headerPrinted, model.printedEntries, model.staticQueued)
+	}
+
+	output := command().(staticOutputMsg)
+	static := ansi.Strip(renderStaticMessage(model, output))
+	if !strings.Contains(static, "\n  ijklmno") {
+		t.Fatalf("queued static output kept stale wrapping after resize: %q", static)
+	}
+	updated, _ := model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
+	if !model.headerPrinted || model.printedEntries != 1 || model.staticQueued {
+		t.Fatalf("commit after resize = header %v entries %d queued %v", model.headerPrinted, model.printedEntries, model.staticQueued)
+	}
+}
+
 func TestStaticOutputPrintsOnlyNewTranscriptRows(t *testing.T) {
 	model := newTestModel(t)
 	mustAppendUser(t, model.session, "first")
@@ -750,7 +933,7 @@ func TestStaticOutputPrintsOnlyNewTranscriptRows(t *testing.T) {
 	if !ok {
 		t.Fatalf("first static command = %T", firstMessage)
 	}
-	if content := ansi.Strip(first.content); !strings.Contains(content, "Claude Code") || !strings.Contains(content, "first") {
+	if content := ansi.Strip(renderStaticMessage(model, first)); !strings.Contains(content, "Claude Code") || !strings.Contains(content, "first") {
 		t.Fatalf("first static output = %q", content)
 	}
 	updated, _ := model.Update(staticOutputCommittedMsg{
@@ -767,7 +950,7 @@ func TestStaticOutputPrintsOnlyNewTranscriptRows(t *testing.T) {
 	if !ok {
 		t.Fatalf("second static command = %T", secondMessage)
 	}
-	content := ansi.Strip(second.content)
+	content := ansi.Strip(renderStaticMessage(model, second))
 	if !strings.HasPrefix(content, "\n") || !strings.Contains(content, "second") {
 		t.Fatalf("second static output lacks source margin/message: %q", content)
 	}
@@ -775,6 +958,50 @@ func TestStaticOutputPrintsOnlyNewTranscriptRows(t *testing.T) {
 		if strings.Contains(content, repeated) {
 			t.Fatalf("second static output repeated %q: %q", repeated, content)
 		}
+	}
+}
+
+func TestStaticOutputCommitsMultipleTurnsWithoutReplay(t *testing.T) {
+	model := newTestModel(t)
+	var previous []string
+	for turn := 1; turn <= 3; turn++ {
+		prompt := fmt.Sprintf("question-%d", turn)
+		answer := fmt.Sprintf("answer-%d", turn)
+		finished := fmt.Sprintf("Worked for %ds", turn)
+		mustAppendUser(t, model.session, prompt)
+		mustAppendAssistant(t, model.session, answer)
+		if err := model.session.AppendTurnDuration(finished); err != nil {
+			t.Fatalf("AppendTurnDuration() error = %v", err)
+		}
+
+		before := model.printedEntries
+		command := model.queueStaticOutput(nil)
+		if command == nil || !model.staticQueued || model.printedEntries != before {
+			t.Fatalf("turn %d queue state = command %v queued %v printed %d before %d", turn, command != nil, model.staticQueued, model.printedEntries, before)
+		}
+		output := command().(staticOutputMsg)
+		content := ansi.Strip(renderStaticMessage(model, output))
+		for _, want := range []string{prompt, answer, finished} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("turn %d static output missing %q: %q", turn, want, content)
+			}
+		}
+		for _, old := range previous {
+			if strings.Contains(content, old) {
+				t.Fatalf("turn %d replayed committed entry %q: %q", turn, old, content)
+			}
+		}
+
+		updated, _ := model.Update(staticOutputCommittedMsg{
+			includeHeader: output.includeHeader,
+			entryCount:    output.entryCount,
+			next:          output.next,
+		})
+		model = updated.(Model)
+		if model.staticQueued || model.printedEntries != turn*3 {
+			t.Fatalf("turn %d commit state = queued %v printed %d", turn, model.staticQueued, model.printedEntries)
+		}
+		previous = append(previous, prompt, answer, finished)
 	}
 }
 
@@ -1037,6 +1264,15 @@ func textDelta(text string) query.Event {
 	}}
 }
 
+func renderStaticMessage(model Model, message staticOutputMsg) string {
+	return model.renderStaticOutput(
+		message.includeHeader,
+		message.entries,
+		message.start,
+		message.entryCount,
+	)
+}
+
 func runCommand(t *testing.T, model Model, command tea.Cmd) (Model, tea.Cmd) {
 	t.Helper()
 	if command == nil {
@@ -1060,7 +1296,15 @@ func runCommand(t *testing.T, model Model, command tea.Cmd) (Model, tea.Cmd) {
 	updated, next := model.Update(message)
 	model = updated.(Model)
 	if !model.staticQueued || next == nil {
-		return model, next
+		if next == nil || model.busy {
+			return model, next
+		}
+		message = next()
+		if _, ok := message.(focusInputMsg); !ok {
+			t.Fatalf("idle continuation = %T, want focusInputMsg", message)
+		}
+		updated, next = model.Update(message)
+		return updated.(Model), next
 	}
 
 	output, ok := next().(staticOutputMsg)
@@ -1072,7 +1316,17 @@ func runCommand(t *testing.T, model Model, command tea.Cmd) (Model, tea.Cmd) {
 		entryCount:    output.entryCount,
 		next:          output.next,
 	})
-	return updated.(Model), output.next
+	model = updated.(Model)
+	if output.next == nil || model.busy {
+		return model, output.next
+	}
+
+	message = output.next()
+	if _, ok := message.(focusInputMsg); !ok {
+		t.Fatalf("idle static continuation = %T, want focusInputMsg", message)
+	}
+	updated, next = model.Update(message)
+	return updated.(Model), next
 }
 
 func mustAppendUser(t *testing.T, state *session.Session, text string) {

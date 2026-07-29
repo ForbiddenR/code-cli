@@ -33,12 +33,11 @@ var (
 )
 
 const (
-	defaultWidth          = 80
-	maxInputContentLines  = 9999
-	queryEventBuffer      = 32
-	spinnerTickInterval   = 50 * time.Millisecond
-	spinnerFrameInterval  = 120 * time.Millisecond
-	turnDurationThreshold = 30 * time.Second
+	defaultWidth         = 80
+	maxInputContentLines = 9999
+	queryEventBuffer     = 32
+	spinnerTickInterval  = 50 * time.Millisecond
+	spinnerFrameInterval = 120 * time.Millisecond
 
 	// Source Clawd default pose segments (9 cols wide).
 	clawdR1Left  = " ▐"
@@ -102,12 +101,11 @@ type Model struct {
 	headerPrinted    bool
 	printedEntries   int
 	staticQueued     bool
-	queuedHeader     bool
-	queuedEntryCount int
 }
 
 type staticOutputMsg struct {
-	content       string
+	entries       []session.Entry
+	start         int
 	includeHeader bool
 	entryCount    int
 	next          tea.Cmd
@@ -132,6 +130,8 @@ type statusTickMsg struct {
 	generation uint64
 	at         time.Time
 }
+
+type focusInputMsg struct{}
 
 type statusMode uint8
 
@@ -239,6 +239,9 @@ func (model Model) Init() tea.Cmd {
 func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.KeyPressMsg:
+		if model.staticQueued {
+			return model, nil
+		}
 		if message.Code == 'c' && message.Mod == tea.ModCtrl {
 			if model.busy {
 				if model.canceling {
@@ -260,8 +263,14 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, model.submit()
 		}
 	case staticOutputMsg:
+		content := model.renderStaticOutput(
+			message.includeHeader,
+			message.entries,
+			message.start,
+			message.entryCount,
+		)
 		return model, tea.Sequence(
-			tea.Println(message.content),
+			tea.Println(content),
 			func() tea.Msg {
 				return staticOutputCommittedMsg{
 					includeHeader: message.includeHeader,
@@ -276,8 +285,6 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		model.printedEntries = max(model.printedEntries, message.entryCount)
 		model.staticQueued = false
-		model.queuedHeader = false
-		model.queuedEntryCount = 0
 		if model.busy && !model.statusTicking {
 			model.statusTicking = true
 			return model, tea.Batch(
@@ -299,6 +306,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, statusTick(message.generation)
 	case queryEventMsg:
 		return model.handleQueryEvent(message)
+	case focusInputMsg:
+		return model, model.input.Focus()
 	case tea.WindowSizeMsg:
 		model.resize(message.Width)
 		return model, nil
@@ -377,9 +386,9 @@ func startQuery(responder Responder, ctx context.Context, generation uint64, mes
 	}
 }
 
-// queueStaticOutput removes stable rows from the managed view and schedules
-// them for insertion above the program. Printed markers advance only after the
-// renderer receives the output, and the continuation runs after that commit.
+// queueStaticOutput snapshots stable rows for insertion above the program.
+// They remain managed until the committed message advances the printed markers,
+// and the continuation runs only after that commit.
 func (model *Model) queueStaticOutput(next tea.Cmd) tea.Cmd {
 	entries := model.session.Entries()
 	start := min(model.printedEntries, len(entries))
@@ -389,13 +398,11 @@ func (model *Model) queueStaticOutput(next tea.Cmd) tea.Cmd {
 	}
 
 	entryCount := len(entries)
-	content := model.renderStaticOutput(includeHeader, entries, start, entryCount)
 	model.staticQueued = true
-	model.queuedHeader = includeHeader
-	model.queuedEntryCount = entryCount
 	return func() tea.Msg {
 		return staticOutputMsg{
-			content:       content,
+			entries:       entries,
+			start:         start,
 			includeHeader: includeHeader,
 			entryCount:    entryCount,
 			next:          next,
@@ -474,7 +481,9 @@ func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd)
 			))
 		}
 		model.finishQuery(completionErr)
-		return *model, model.queueStaticOutput(model.input.Focus())
+		return *model, model.queueStaticOutput(func() tea.Msg {
+			return focusInputMsg{}
+		})
 	}
 	return *model, nextQueryEvent(message.ctx, message.generation, message.events)
 }
@@ -553,8 +562,8 @@ func (model *Model) finishQuery(err error) {
 	model.configureInputGeometry()
 }
 
-func (model Model) shouldAppendTurnDuration(event query.Event, completedAt time.Time) bool {
-	if model.canceling || model.turnStarted.IsZero() || completedAt.Sub(model.turnStarted) <= turnDurationThreshold {
+func (model Model) shouldAppendTurnDuration(event query.Event, _ time.Time) bool {
+	if model.canceling || model.turnStarted.IsZero() {
 		return false
 	}
 	return event.Result == nil || event.Result.Outcome != query.OutcomeCanceled
@@ -684,7 +693,7 @@ func (model *Model) applyInputStyles() {
 
 func (model Model) renderLines() []string {
 	var lines []string
-	if !model.headerPrinted && !(model.staticQueued && model.queuedHeader) {
+	if !model.headerPrinted {
 		lines = model.renderHeader()
 	}
 	lines = append(lines, model.renderTranscript()...)
@@ -918,11 +927,7 @@ func alignRight(value string, width int) string {
 
 func (model Model) renderTranscript() []string {
 	entries := model.session.Entries()
-	start := model.printedEntries
-	if model.staticQueued {
-		start = max(start, model.queuedEntryCount)
-	}
-	start = min(start, len(entries))
+	start := min(model.printedEntries, len(entries))
 	if start == len(entries) && model.transient == "" {
 		return nil
 	}
