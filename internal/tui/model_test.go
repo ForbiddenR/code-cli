@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"image/color"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -27,10 +29,17 @@ type responderCall struct {
 type fakeResponder struct {
 	channels []<-chan query.Event
 	calls    []responderCall
+	started  chan struct{}
 }
 
 func (responder *fakeResponder) SubmitEvents(ctx context.Context, message core.Message, buffer int) <-chan query.Event {
 	responder.calls = append(responder.calls, responderCall{ctx: ctx, message: message, buffer: buffer})
+	if responder.started != nil {
+		select {
+		case responder.started <- struct{}{}:
+		default:
+		}
+	}
 	index := len(responder.calls) - 1
 	if index >= len(responder.channels) {
 		return nil
@@ -92,20 +101,21 @@ func TestModelStreamsAndCommitsOnlyVisibleAssistantText(t *testing.T) {
 	if strings.Contains(content, "Thinking…") {
 		t.Fatalf("streaming view still shows spinner inside/near prompt: %q", content)
 	}
-	// Before any text delta, status should sit above the bordered composer.
+	// Before any text delta, the source-style verb should sit above the bordered composer.
 	savedTransient := model.transient
 	model.transient = ""
-	model.status = "Thinking…"
 	idleBusy := ansi.Strip(strings.Join(model.renderPrompt(), "\n"))
-	if !strings.Contains(idleBusy, "Thinking…") {
-		t.Fatalf("busy prompt missing Thinking status: %q", idleBusy)
+	if !strings.Contains(idleBusy, model.status) {
+		t.Fatalf("busy prompt missing spinner verb %q: %q", model.status, idleBusy)
+	}
+	if strings.Contains(idleBusy, "Thinking…") {
+		t.Fatalf("busy prompt uses hardcoded initial Thinking status: %q", idleBusy)
 	}
 	// Status must not appear as a row inside the open-side border block.
-	// Border top is a full-width ─ line; Thinking should be above it.
 	top := strings.Index(idleBusy, "─")
-	statusAt := strings.Index(idleBusy, "Thinking…")
+	statusAt := strings.Index(idleBusy, model.status)
 	if top < 0 || statusAt < 0 || statusAt > top {
-		t.Fatalf("Thinking status should be above prompt border: statusAt=%d top=%d view=%q", statusAt, top, idleBusy)
+		t.Fatalf("spinner status should be above prompt border: statusAt=%d top=%d view=%q", statusAt, top, idleBusy)
 	}
 	model.transient = savedTransient
 
@@ -174,6 +184,178 @@ func TestModelStreamsAndCommitsOnlyVisibleAssistantText(t *testing.T) {
 	}
 }
 
+func TestThinkingStatusAdvancesAndTransitionsWithStream(t *testing.T) {
+	events := make(chan query.Event, 4)
+	model := newTestModelWithResponder(t, &fakeResponder{channels: []<-chan query.Event{events}})
+	model.input.SetValue("thinking")
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	message := command()
+	output, ok := message.(staticOutputMsg)
+	if !ok {
+		t.Fatalf("submit command = %T, want staticOutputMsg", message)
+	}
+	updated, command = model.Update(output)
+	model = updated.(Model)
+	updated, _ = model.Update(staticOutputCommittedMsg{includeHeader: output.includeHeader, entryCount: output.entryCount, next: output.next})
+	model = updated.(Model)
+	if model.statusFrame != 0 {
+		t.Fatalf("initial status frame = %d, want 0", model.statusFrame)
+	}
+	if model.status == "Thinking…" || !isSpinnerVerb(model.status) {
+		t.Fatalf("initial status = %q, want a source-style spinner verb", model.status)
+	}
+	if !model.thinkingStarted.IsZero() {
+		t.Fatalf("thinking started at submission: %s", model.thinkingStarted)
+	}
+	initialStatus := model.status
+	initialLine := ansi.Strip(model.busyStatusLine())
+	if !strings.Contains(initialLine, "· "+initialStatus) || strings.Contains(initialLine, "Thinking…") {
+		t.Fatalf("initial spinner line = %q", initialLine)
+	}
+
+	events <- query.Event{Type: query.EventStream, Stream: &anthropicapi.StreamEvent{
+		Type:  anthropicapi.StreamEventContentBlockStart,
+		Block: &core.ContentBlock{Type: core.ContentBlockThinking},
+	}}
+	model, command = runCommand(t, model, output.next)
+	_ = command
+	if model.statusMode != statusThinking || model.thinkingStarted.IsZero() {
+		t.Fatalf("thinking state = mode %d started %s", model.statusMode, model.thinkingStarted)
+	}
+	thinkingLine := ansi.Strip(model.busyStatusLine())
+	if !strings.Contains(thinkingLine, initialStatus+" (thinking)") {
+		t.Fatalf("thinking spinner line = %q", thinkingLine)
+	}
+	updated, _ = model.Update(statusTickMsg{
+		generation: model.turnGeneration,
+		at:         model.statusStarted.Add(spinnerFrameInterval),
+	})
+	model = updated.(Model)
+	if model.statusFrame != 1 {
+		t.Fatalf("status frame = %d, want 1", model.statusFrame)
+	}
+	advancedLine := ansi.Strip(model.busyStatusLine())
+	if !strings.Contains(advancedLine, "✢ "+initialStatus) {
+		t.Fatalf("advanced spinner line = %q", advancedLine)
+	}
+
+	events <- textDelta("answer")
+	model, _ = runCommand(t, model, command)
+	if model.statusMode != statusResponding || model.thoughtDuration <= 0 || model.status != initialStatus {
+		t.Fatalf("transition state = mode %d duration %s status %q, want stable %q", model.statusMode, model.thoughtDuration, model.status, initialStatus)
+	}
+	model.transient = ""
+	thoughtLine := ansi.Strip(model.busyStatusLine())
+	if !strings.Contains(thoughtLine, initialStatus+" (thought for 1s)") {
+		t.Fatalf("post-thinking spinner line = %q", thoughtLine)
+	}
+}
+
+func TestSpinnerGlimmerUpdatesBetweenGlyphFrames(t *testing.T) {
+	model := newTestModel(t)
+	model.colorProfile = colorprofile.TrueColor
+	model.updatePalette()
+	model.busy = true
+	model.status = "Orchestrating…"
+	model.statusMode = statusThinking
+	model.statusStarted = time.Now()
+	model.thinkingStarted = model.statusStarted
+
+	updated, _ := model.Update(statusTickMsg{
+		generation: model.turnGeneration,
+		at:         model.statusStarted.Add(2400 * time.Millisecond),
+	})
+	model = updated.(Model)
+	firstFrame := model.statusFrame
+	first := model.busyStatusLine()
+
+	updated, _ = model.Update(statusTickMsg{
+		generation: model.turnGeneration,
+		at:         model.statusStarted.Add(2450 * time.Millisecond),
+	})
+	model = updated.(Model)
+	second := model.busyStatusLine()
+	if model.statusFrame != firstFrame {
+		t.Fatalf("glyph advanced from frame %d to %d within 50ms", firstFrame, model.statusFrame)
+	}
+	if first == second {
+		t.Fatal("50ms animation tick did not update the glimmer")
+	}
+	if ansi.Strip(first) != ansi.Strip(second) {
+		t.Fatalf("glimmer changed visible text: first %q second %q", ansi.Strip(first), ansi.Strip(second))
+	}
+}
+
+func TestCompletedLongTurnAddsPersistentFinishedTag(t *testing.T) {
+	events := make(chan query.Event, 1)
+	model := newTestModelWithResponder(t, &fakeResponder{channels: []<-chan query.Event{events}})
+	model.input.SetValue("long turn")
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	model.turnStarted = time.Now().Add(-(12*time.Minute + 12*time.Second))
+
+	events <- query.Event{Type: query.EventCompleted, Result: &query.Result{Outcome: query.OutcomeEndTurn}}
+	model, _ = runCommand(t, model, command)
+
+	entries := model.Session().Entries()
+	if len(entries) != 2 || entries[1].Style != session.EntryStyleTurnDuration {
+		t.Fatalf("completed entries = %#v, want user + turn duration", entries)
+	}
+	parts := strings.SplitN(entries[1].Text, " for ", 2)
+	if len(parts) != 2 || !isTurnCompletionVerb(parts[0]) || parts[1] != "12m 12s" {
+		t.Fatalf("finished tag = %q", entries[1].Text)
+	}
+	static := ansi.Strip(model.renderStaticOutput(false, entries, 1, 2))
+	if !strings.Contains(static, "✻ "+entries[1].Text) {
+		t.Fatalf("finished tag static output = %q", static)
+	}
+}
+
+func TestCompletedTurnDurationEligibility(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		duration  time.Duration
+		canceling bool
+		outcome   query.Outcome
+		want      bool
+	}{
+		{name: "over threshold", duration: 31 * time.Second, outcome: query.OutcomeEndTurn, want: true},
+		{name: "at threshold", duration: 30 * time.Second, outcome: query.OutcomeEndTurn},
+		{name: "canceling", duration: time.Minute, canceling: true, outcome: query.OutcomeEndTurn},
+		{name: "canceled outcome", duration: time.Minute, outcome: query.OutcomeCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := newTestModel(t)
+			completedAt := time.Now()
+			model.turnStarted = completedAt.Add(-test.duration)
+			model.canceling = test.canceling
+			event := query.Event{Result: &query.Result{Outcome: test.outcome}}
+			if got := model.shouldAppendTurnDuration(event, completedAt); got != test.want {
+				t.Fatalf("shouldAppendTurnDuration() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFormatTurnDuration(t *testing.T) {
+	for _, test := range []struct {
+		duration time.Duration
+		want     string
+	}{
+		{duration: 999 * time.Millisecond, want: "0s"},
+		{duration: 12*time.Second + 999*time.Millisecond, want: "12s"},
+		{duration: 12*time.Minute + 12*time.Second, want: "12m 12s"},
+		{duration: 59*time.Minute + 59*time.Second + 600*time.Millisecond, want: "1h 0m 0s"},
+		{duration: 2*time.Hour + 3*time.Minute + 4*time.Second, want: "2h 3m 4s"},
+		{duration: 2*24*time.Hour + 3*time.Hour + 4*time.Minute + 45*time.Second, want: "2d 3h 4m"},
+	} {
+		if got := formatTurnDuration(test.duration); got != test.want {
+			t.Fatalf("formatTurnDuration(%s) = %q, want %q", test.duration, got, test.want)
+		}
+	}
+}
+
 func TestModelAllowsOnlyOneActiveQuery(t *testing.T) {
 	events := make(chan query.Event, 1)
 	responder := &fakeResponder{channels: []<-chan query.Event{events}}
@@ -197,6 +379,112 @@ func TestModelAllowsOnlyOneActiveQuery(t *testing.T) {
 		t.Fatalf("busy input changed to %q", model.input.Value())
 	}
 	_ = next
+}
+
+func TestSpinnerStartsBeforeFirstQueryEvent(t *testing.T) {
+	events := make(chan query.Event)
+	model := newTestModelWithResponder(t, &fakeResponder{channels: []<-chan query.Event{events}})
+	model.input.SetValue("wait")
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	output := command().(staticOutputMsg)
+	updated, command = model.Update(staticOutputCommittedMsg{
+		includeHeader: output.includeHeader,
+		entryCount:    output.entryCount,
+		next:          output.next,
+	})
+	model = updated.(Model)
+
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("post-commit command = %T len %d, want two-command batch", message, len(batch))
+	}
+	messages := make(chan tea.Msg, len(batch))
+	for _, command := range batch {
+		go func(command tea.Cmd) { messages <- command() }(command)
+	}
+
+	select {
+	case message := <-messages:
+		tick, ok := message.(statusTickMsg)
+		if !ok || tick.generation != model.turnGeneration {
+			t.Fatalf("first batch result = %#v, want active-turn status tick", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spinner did not tick while first query event was silent")
+	}
+	model.cancel()
+}
+
+func TestCtrlCCancelsSilentResponderWithoutQuitting(t *testing.T) {
+	events := make(chan query.Event)
+	responder := &fakeResponder{
+		channels: []<-chan query.Event{events},
+		started:  make(chan struct{}, 1),
+	}
+	model := newTestModelWithResponder(t, responder)
+	model.input.SetValue("cancel silent")
+
+	updated, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(Model)
+	output := command().(staticOutputMsg)
+	queryResult := make(chan tea.Msg, 1)
+	go func() { queryResult <- output.next() }()
+
+	select {
+	case <-responder.started:
+	case <-time.After(time.Second):
+		t.Fatal("responder did not start")
+	}
+
+	updated, cancelCommand := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	model = updated.(Model)
+	if cancelCommand != nil {
+		t.Fatal("first Ctrl+C should cancel without quitting")
+	}
+
+	select {
+	case message := <-queryResult:
+		updated, _ = model.Update(message)
+		model = updated.(Model)
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not release silent responder wait")
+	}
+	if model.busy || model.canceling || !model.input.Focused() || model.err != nil {
+		t.Fatalf("silent cancellation left stale state: busy=%v canceling=%v focused=%v err=%v", model.busy, model.canceling, model.input.Focused(), model.err)
+	}
+}
+
+func TestStaleTurnMessagesCannotAffectActiveTurn(t *testing.T) {
+	model := newTestModel(t)
+	model.busy = true
+	model.statusStarted = time.Now()
+	model.turnGeneration = 2
+	model.statusTicking = true
+
+	updated, command := model.Update(statusTickMsg{
+		generation: 1,
+		at:         model.statusStarted.Add(time.Second),
+	})
+	model = updated.(Model)
+	if command != nil || model.statusElapsed != 0 || model.statusFrame != 0 || !model.statusTicking {
+		t.Fatalf("stale tick changed active turn: elapsed=%s frame=%d ticking=%v command=%v", model.statusElapsed, model.statusFrame, model.statusTicking, command != nil)
+	}
+
+	updated, command = model.Update(queryEventMsg{
+		generation: 1,
+		ok:         true,
+		event: query.Event{
+			Type:   query.EventCompleted,
+			Result: &query.Result{Outcome: query.OutcomeEndTurn},
+		},
+	})
+	model = updated.(Model)
+	if command != nil || !model.busy {
+		t.Fatal("stale completion finished the active turn")
+	}
 }
 
 func TestCtrlCCancelsActiveQueryWithoutQuitting(t *testing.T) {
@@ -444,7 +732,11 @@ func TestSubmitPrintsHeaderAndUserBeforeStartingQuery(t *testing.T) {
 		t.Fatalf("live view retained committed header/transcript: %q", live)
 	}
 	liveLines := strings.Split(live, "\n")
-	if len(liveLines) < 6 || strings.TrimSpace(liveLines[0]) != "" || strings.TrimSpace(liveLines[1]) != "● Thinking…" || strings.TrimSpace(liveLines[2]) != "" || !strings.Contains(liveLines[3], "─") || !strings.HasPrefix(liveLines[4], "❯") || !strings.Contains(liveLines[5], "─") {
+	statusLine := ""
+	if len(liveLines) > 1 {
+		statusLine = strings.TrimSpace(liveLines[1])
+	}
+	if len(liveLines) < 6 || strings.TrimSpace(liveLines[0]) != "" || statusLine != "· "+model.status || strings.Contains(statusLine, "Thinking…") || strings.TrimSpace(liveLines[2]) != "" || !strings.Contains(liveLines[3], "─") || !strings.HasPrefix(liveLines[4], "❯") || !strings.Contains(liveLines[5], "─") {
 		t.Fatalf("live status/composer order = %#v", liveLines)
 	}
 }
@@ -723,6 +1015,19 @@ func TestTruncatePreservesDisplayWidth(t *testing.T) {
 	if got, want := truncateDisplay("世界你好", 3), "世…"; got != want {
 		t.Fatalf("truncateDisplay() = %q, want %q", got, want)
 	}
+}
+
+func isSpinnerVerb(status string) bool {
+	for _, verb := range spinnerVerbs {
+		if status == verb+"…" {
+			return true
+		}
+	}
+	return false
+}
+
+func isTurnCompletionVerb(verb string) bool {
+	return slices.Contains(turnCompletionVerbs, verb)
 }
 
 func textDelta(text string) query.Event {

@@ -3,11 +3,11 @@ package core
 import "time"
 
 const (
-	// DefaultMaxRetries matches the TypeScript API retry loop's default retry count.
-	DefaultMaxRetries = 10
+	// DefaultMaxRetries bounds transient setup failures without making the TUI wait for minutes.
+	DefaultMaxRetries = 2
 	// DefaultRetryBaseDelay is the first retry delay before exponential backoff.
 	DefaultRetryBaseDelay = 500 * time.Millisecond
-	// DefaultRetryMaxDelay caps computed exponential backoff delays.
+	// DefaultRetryMaxDelay caps retry waits, including server-requested delays.
 	DefaultRetryMaxDelay = 32 * time.Second
 	// DefaultRetryJitterFraction adds up to 25% jitter to computed delays.
 	DefaultRetryJitterFraction = 0.25
@@ -19,7 +19,7 @@ type RetryConfig struct {
 	MaxRetries int
 	// BaseDelay is the delay before the first retry.
 	BaseDelay time.Duration
-	// MaxDelay caps computed exponential backoff delays.
+	// MaxDelay caps retry waits, including server-requested delays.
 	MaxDelay time.Duration
 	// JitterFraction adds bounded positive jitter to computed delays.
 	JitterFraction float64

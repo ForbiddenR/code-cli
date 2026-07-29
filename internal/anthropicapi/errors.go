@@ -30,6 +30,14 @@ func ClassifyError(err error) *core.APIError {
 		return normalized
 	}
 
+	if errors.Is(err, ErrStreamIdleTimeout) {
+		return &core.APIError{
+			Kind:      core.APIErrorTimeout,
+			Message:   err.Error(),
+			Retryable: true,
+			Cause:     err,
+		}
+	}
 	if errors.Is(err, context.Canceled) {
 		return &core.APIError{
 			Kind:      core.APIErrorAbort,

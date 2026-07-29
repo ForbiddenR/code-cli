@@ -68,6 +68,23 @@ func TestNilSessionAccessors(t *testing.T) {
 	}
 }
 
+func TestSessionAppendTurnDurationDoesNotChangeSummary(t *testing.T) {
+	session := New()
+	if _, err := session.AppendUser("question"); err != nil {
+		t.Fatalf("AppendUser() error = %v", err)
+	}
+	if err := session.AppendTurnDuration("Brewed for 12m 12s"); err != nil {
+		t.Fatalf("AppendTurnDuration() error = %v", err)
+	}
+	if got, want := session.Summary(), "question"; got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+	entries := session.Entries()
+	if len(entries) != 2 || entries[1] != (Entry{Role: core.RoleAssistant, Text: "Brewed for 12m 12s", Style: EntryStyleTurnDuration}) {
+		t.Fatalf("turn duration entry = %#v", entries)
+	}
+}
+
 func TestSessionAppendErrorDoesNotChangeSummary(t *testing.T) {
 	session := New()
 	if _, err := session.AppendUser("question"); err != nil {

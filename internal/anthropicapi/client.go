@@ -24,6 +24,7 @@ func NewSDKClient(config core.APIConfig) (*SDKClient, error) {
 
 	options := []option.RequestOption{
 		option.WithBaseURL(config.BaseURL),
+		option.WithHTTPClient(newHTTPClient(config)),
 		// Retry behavior is owned by this package so it stays normalized and testable.
 		option.WithMaxRetries(0),
 	}
@@ -82,7 +83,11 @@ func (c *SDKClient) StreamMessage(ctx context.Context, req MessageRequest, opts 
 	callOptions := ApplyOptions(opts...)
 	stream, err := retryAPI(ctx, c.retryConfig(callOptions), nil, func(ctx context.Context, _ int) (Stream, error) {
 		streamCtx, cancel := context.WithCancel(ctx)
-		sdkStream := c.client.Messages.NewStreaming(streamCtx, params, c.requestOptions(req.Betas, callOptions)...)
+		requestOptions := append(
+			c.requestOptions(req.Betas, callOptions),
+			option.WithHeader(streamingRequestHeader, "1"),
+		)
+		sdkStream := c.client.Messages.NewStreaming(streamCtx, params, requestOptions...)
 		if err := sdkStream.Err(); err != nil {
 			cancel()
 			_ = sdkStream.Close()

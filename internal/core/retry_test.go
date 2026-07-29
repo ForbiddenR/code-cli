@@ -10,6 +10,9 @@ func TestDefaultRetryConfig(t *testing.T) {
 	if got.MaxRetries != DefaultMaxRetries {
 		t.Fatalf("max retries = %d", got.MaxRetries)
 	}
+	if DefaultMaxRetries != 2 {
+		t.Fatalf("default max retries = %d, want 2", DefaultMaxRetries)
+	}
 	if got.BaseDelay != 500*time.Millisecond {
 		t.Fatalf("base delay = %s", got.BaseDelay)
 	}
@@ -42,8 +45,16 @@ func TestAPIConfigWithDefaultsRetryPolicy(t *testing.T) {
 	if defaulted.Retry.MaxRetries != DefaultMaxRetries {
 		t.Fatalf("default max retries = %d", defaulted.Retry.MaxRetries)
 	}
+	if defaulted.ResponseHeaderTimeout != DefaultResponseHeaderTimeout ||
+		defaulted.StreamReadIdleTimeout != DefaultStreamReadIdleTimeout {
+		t.Fatalf("default API timeouts = %s/%s", defaulted.ResponseHeaderTimeout, defaulted.StreamReadIdleTimeout)
+	}
 
-	disabled := APIConfig{Retry: &RetryConfig{MaxRetries: 0}}.WithDefaults()
+	disabled := APIConfig{
+		Retry:                 &RetryConfig{MaxRetries: 0},
+		ResponseHeaderTimeout: 10 * time.Second,
+		StreamReadIdleTimeout: 20 * time.Second,
+	}.WithDefaults()
 	if disabled.Retry == nil {
 		t.Fatalf("expected retry config")
 	}
@@ -52,5 +63,8 @@ func TestAPIConfigWithDefaultsRetryPolicy(t *testing.T) {
 	}
 	if disabled.Retry.BaseDelay != DefaultRetryBaseDelay {
 		t.Fatalf("disabled base delay = %s", disabled.Retry.BaseDelay)
+	}
+	if disabled.ResponseHeaderTimeout != 10*time.Second || disabled.StreamReadIdleTimeout != 20*time.Second {
+		t.Fatalf("configured API timeouts = %s/%s", disabled.ResponseHeaderTimeout, disabled.StreamReadIdleTimeout)
 	}
 }

@@ -42,6 +42,11 @@ func retryAPI[T any](ctx context.Context, config core.RetryConfig, sleep retrySl
 
 		delay := retryDelay(config, attempt)
 		if retryAfter, ok := retryAfterDelay(err); ok {
+			if retryAfter > config.MaxDelay {
+				// Retrying before the server's requested time is incorrect, but an
+				// unbounded sleep would make the interactive client appear hung.
+				return zero, apiErr
+			}
 			delay = retryAfter
 		}
 		if err := sleep(ctx, delay); err != nil {
@@ -73,7 +78,7 @@ func retryDelay(config core.RetryConfig, retryAttempt int) time.Duration {
 		jitter := time.Duration(rand.Float64() * config.JitterFraction * float64(delay))
 		delay += jitter
 	}
-	return delay
+	return min(delay, config.MaxDelay)
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) error {

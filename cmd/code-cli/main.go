@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"code-cli/internal/core"
 	"code-cli/internal/query"
 	"code-cli/internal/session"
+	"code-cli/internal/settings"
 	"code-cli/internal/systemprompt"
 	"code-cli/internal/tui"
 )
@@ -17,12 +19,15 @@ import (
 const version = "dev"
 
 type dependencies struct {
-	getenv    func(string) string
-	getwd     func() (string, error)
-	newClient func(core.APIConfig) (query.ModelClient, error)
-	runTUI    func(*session.Session, tui.Config) error
-	platform  string
-	osVersion string
+	getenv           func(string) string
+	getwd            func() (string, error)
+	userHomeDir      func() (string, error)
+	loadUserSettings func(string) (settings.User, error)
+	applyEnvironment func(map[string]string) error
+	newClient        func(core.APIConfig) (query.ModelClient, error)
+	runTUI           func(*session.Session, tui.Config) error
+	platform         string
+	osVersion        string
 }
 
 func main() {
@@ -34,8 +39,16 @@ func main() {
 
 func defaultDependencies() dependencies {
 	return dependencies{
-		getenv: os.Getenv,
-		getwd:  os.Getwd,
+		getenv:           os.Getenv,
+		getwd:            os.Getwd,
+		userHomeDir:      os.UserHomeDir,
+		loadUserSettings: settings.LoadUser,
+		applyEnvironment: func(values map[string]string) error {
+			return settings.ApplyEnvironment(
+				values,
+				settings.ProcessEnvironment(),
+			)
+		},
 		newClient: func(config core.APIConfig) (query.ModelClient, error) {
 			return anthropicapi.NewSDKClient(config)
 		},
@@ -46,6 +59,23 @@ func defaultDependencies() dependencies {
 }
 
 func run(deps dependencies) error {
+	homeDirectory, err := deps.userHomeDir()
+	if err != nil {
+		return fmt.Errorf("get user home directory: %w", err)
+	}
+	settingsPath := filepath.Join(
+		homeDirectory,
+		".claude",
+		"settings.json",
+	)
+	userSettings, err := deps.loadUserSettings(settingsPath)
+	if err != nil {
+		return fmt.Errorf("load user settings: %w", err)
+	}
+	if err := deps.applyEnvironment(userSettings.Env); err != nil {
+		return fmt.Errorf("apply user settings environment: %w", err)
+	}
+
 	workingDirectory, err := deps.getwd()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)

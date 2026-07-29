@@ -227,12 +227,20 @@ composer, and shortcuts footer rendered sequentially in the terminal:
 go run ./cmd/code-cli
 ```
 
-At runtime, the executable resolves the model from `ANTHROPIC_MODEL`, falling back
-to `core.DefaultModel`, constructs the official Anthropic SDK client, and streams
-Messages API output into the TUI. Authentication follows the SDK's environment
-behavior; credentials are not copied into the system prompt, transcript, or visible
-TUI configuration. Running the executable therefore requires network access and a
-credential source accepted by the SDK.
+At runtime, the executable loads the top-level `env` object from the user settings
+file at `~/.claude/settings.json` and overlays those values onto the inherited
+process environment before reading runtime configuration or constructing the
+official Anthropic SDK client. Settings values are literal: `$VAR`, `${VAR}`, `~`,
+and shell syntax are not expanded. Only this user settings source and its `env`
+field are implemented; project, local, managed, and command-line settings sources
+are not yet supported.
+
+The executable then resolves the model from `ANTHROPIC_MODEL`, falling back to
+`core.DefaultModel`, and streams Messages API output into the TUI. Authentication
+follows the SDK's environment behavior, including credentials supplied through the
+user settings environment; credentials are not copied into the system prompt,
+transcript, or visible TUI configuration. Running the executable therefore requires
+network access and a credential source accepted by the SDK.
 
 - Enter submits the current message; Shift+Enter inserts a newline.
 - The composer grows with multiline and wrapped input without the fullscreen-only

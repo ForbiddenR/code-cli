@@ -27,6 +27,19 @@ func TestRetryDelayNoJitterCapsAtMaxDelay(t *testing.T) {
 	}
 }
 
+func TestRetryDelayJitterNeverExceedsMaxDelay(t *testing.T) {
+	config := core.RetryConfig{
+		BaseDelay:      time.Second,
+		MaxDelay:       time.Second,
+		JitterFraction: 1,
+	}.WithDefaults()
+	for range 100 {
+		if got := retryDelay(config, 1); got != time.Second {
+			t.Fatalf("jittered delay = %s, want max delay", got)
+		}
+	}
+}
+
 func TestRetryAPIRetryableErrorSucceeds(t *testing.T) {
 	var attempts int
 	var sleeps []time.Duration
@@ -104,8 +117,52 @@ func TestRetryAfterDelayReadsHeaders(t *testing.T) {
 	}
 }
 
+func TestRetryAPIRejectsRetryAfterBeyondMaxDelay(t *testing.T) {
+	for _, value := range []string{
+		"86400",
+		time.Now().Add(24 * time.Hour).UTC().Format(http.TimeFormat),
+	} {
+		t.Run(value, func(t *testing.T) {
+			var slept time.Duration
+			attempts := 0
+			_, err := retryAPI(context.TODO(), core.RetryConfig{
+				MaxRetries: 1,
+				BaseDelay:  time.Second,
+				MaxDelay:   5 * time.Second,
+			}, func(_ context.Context, delay time.Duration) error {
+				slept = delay
+				return nil
+			}, func(context.Context, int) (string, error) {
+				attempts++
+				return "", retryAfterAPIError{
+					Header: http.Header{"Retry-After": []string{value}},
+					err: &core.APIError{
+						Kind:      core.APIErrorRateLimit,
+						Message:   "retry",
+						Retryable: true,
+					},
+				}
+			})
+			if err == nil || attempts != 1 {
+				t.Fatalf("retryAPI() error = %v attempts=%d", err, attempts)
+			}
+			if slept != 0 {
+				t.Fatalf("sleep = %s, want no early retry", slept)
+			}
+		})
+	}
+}
+
 type retryAfterHeaderError struct {
 	Header http.Header
 }
 
 func (e retryAfterHeaderError) Error() string { return "retry later" }
+
+type retryAfterAPIError struct {
+	Header http.Header
+	err    error
+}
+
+func (e retryAfterAPIError) Error() string { return e.err.Error() }
+func (e retryAfterAPIError) Unwrap() error { return e.err }

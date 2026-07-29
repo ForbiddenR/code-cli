@@ -18,6 +18,8 @@ const (
 	EntryStyleDefault EntryStyle = ""
 	// EntryStyleError renders an assistant-style API error (source MessageResponse).
 	EntryStyleError EntryStyle = "error"
+	// EntryStyleTurnDuration renders the persisted completion row for a long turn.
+	EntryStyleTurnDuration EntryStyle = "turn_duration"
 )
 
 // Entry is one normalized conversation entry.
@@ -69,6 +71,17 @@ func (session *Session) AppendError(text string) error {
 		return err
 	}
 	entry.Style = EntryStyleError
+	session.entries = append(session.entries, entry)
+	return nil
+}
+
+// AppendTurnDuration adds a source-style completed-turn row without changing the summary.
+func (session *Session) AppendTurnDuration(text string) error {
+	entry, err := newEntry(core.RoleAssistant, text)
+	if err != nil {
+		return err
+	}
+	entry.Style = EntryStyleTurnDuration
 	session.entries = append(session.entries, entry)
 	return nil
 }

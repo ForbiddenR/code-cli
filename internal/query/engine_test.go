@@ -38,6 +38,17 @@ func (client *fakeModelClient) StreamMessage(ctx context.Context, request anthro
 	return newFakeStream(responseEvents(client.responses[index])), nil
 }
 
+type streamModelClient struct {
+	stream anthropicapi.Stream
+}
+
+func (client streamModelClient) StreamMessage(ctx context.Context, _ anthropicapi.MessageRequest, _ ...anthropicapi.CallOption) (anthropicapi.Stream, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	return client.stream, nil
+}
+
 type fakeStream struct {
 	events chan anthropicapi.StreamEvent
 }
@@ -479,6 +490,32 @@ func TestEngineDefensiveCopiesAndEventChannel(t *testing.T) {
 	completed.History[0].Content[0].Source.Data = "mutated"
 	if engine.History()[0].Content[0].Source.Data != "original" {
 		t.Fatal("result history mutated engine history")
+	}
+}
+
+func TestSubmitEventsClosesAfterStreamIdleTimeout(t *testing.T) {
+	idleErr := anthropicapi.ClassifyError(anthropicapi.ErrStreamIdleTimeout)
+	stream := newFakeStream([]anthropicapi.StreamEvent{{
+		Type:  anthropicapi.StreamEventError,
+		Error: idleErr,
+	}})
+	engine, err := NewEngine(Config{Client: streamModelClient{stream: stream}})
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	var completed *Event
+	for event := range engine.SubmitEvents(context.TODO(), core.UserMessage("question"), 1) {
+		if event.Type == EventCompleted {
+			copy := event
+			completed = &copy
+		}
+	}
+	if completed == nil || completed.Result == nil || completed.Result.Outcome != OutcomeFailed {
+		t.Fatalf("completed event = %#v", completed)
+	}
+	if !errors.Is(completed.Err, anthropicapi.ErrStreamIdleTimeout) {
+		t.Fatalf("completion error = %v, want idle timeout", completed.Err)
 	}
 }
 

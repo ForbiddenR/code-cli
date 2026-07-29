@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
+	"math"
+	"math/rand/v2"
 	"os"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
@@ -16,6 +20,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 
+	"code-cli/internal/anthropicapi"
 	"code-cli/internal/core"
 	"code-cli/internal/query"
 	"code-cli/internal/session"
@@ -28,9 +33,12 @@ var (
 )
 
 const (
-	defaultWidth         = 80
-	maxInputContentLines = 9999
-	queryEventBuffer     = 32
+	defaultWidth          = 80
+	maxInputContentLines  = 9999
+	queryEventBuffer      = 32
+	spinnerTickInterval   = 50 * time.Millisecond
+	spinnerFrameInterval  = 120 * time.Millisecond
+	turnDurationThreshold = 30 * time.Second
 
 	// Source Clawd default pose segments (9 cols wide).
 	clawdR1Left  = " ▐"
@@ -77,6 +85,16 @@ type Model struct {
 	palette          palette
 	busy             bool
 	status           string
+	statusFrame      int
+	statusStarted    time.Time
+	statusElapsed    time.Duration
+	statusTicking    bool
+	statusMode       statusMode
+	thinkingStarted  time.Time
+	thoughtDuration  time.Duration
+	thoughtVisibleTo time.Time
+	turnStarted      time.Time
+	turnGeneration   uint64
 	transient        string
 	cancel           context.CancelFunc
 	canceling        bool
@@ -102,10 +120,40 @@ type staticOutputCommittedMsg struct {
 }
 
 type queryEventMsg struct {
-	event  query.Event
-	events <-chan query.Event
-	ok     bool
+	ctx        context.Context
+	event      query.Event
+	events     <-chan query.Event
+	generation uint64
+	ok         bool
+	canceled   bool
 }
+
+type statusTickMsg struct {
+	generation uint64
+	at         time.Time
+}
+
+type statusMode uint8
+
+const (
+	statusRequesting statusMode = iota
+	statusThinking
+	statusResponding
+	statusToolUse
+)
+
+var (
+	spinnerFrames = []string{"·", "✢", "*", "✶", "✻", "✽", "✻", "✶", "*", "✢"}
+	spinnerVerbs  = []string{
+		"Architecting", "Brewing", "Calculating", "Clauding", "Cogitating",
+		"Composing", "Considering", "Crafting", "Deciphering", "Deliberating",
+		"Generating", "Ideating", "Inferring", "Musing", "Orchestrating",
+		"Pondering", "Processing", "Ruminating", "Synthesizing", "Working",
+	}
+	turnCompletionVerbs = []string{
+		"Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked",
+	}
+)
 
 // New constructs a source-style TUI with local default metadata.
 // A host must use NewWithConfig to supply a responder.
@@ -230,7 +278,25 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.staticQueued = false
 		model.queuedHeader = false
 		model.queuedEntryCount = 0
+		if model.busy && !model.statusTicking {
+			model.statusTicking = true
+			return model, tea.Batch(
+				message.next,
+				statusTick(model.turnGeneration),
+			)
+		}
 		return model, message.next
+	case statusTickMsg:
+		if message.generation != model.turnGeneration {
+			return model, nil
+		}
+		if !model.busy {
+			model.statusTicking = false
+			return model, nil
+		}
+		model.statusElapsed = max(0, message.at.Sub(model.statusStarted))
+		model.statusFrame = int(model.statusElapsed / spinnerFrameInterval)
+		return model, statusTick(message.generation)
 	case queryEventMsg:
 		return model.handleQueryEvent(message)
 	case tea.WindowSizeMsg:
@@ -270,8 +336,18 @@ func (model *Model) submit() tea.Cmd {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	started := time.Now()
 	model.busy = true
-	model.status = "Thinking…"
+	model.status = spinnerVerbs[rand.IntN(len(spinnerVerbs))] + "…"
+	model.statusFrame = 0
+	model.statusStarted = started
+	model.statusElapsed = 0
+	model.statusMode = statusRequesting
+	model.thinkingStarted = time.Time{}
+	model.thoughtDuration = 0
+	model.thoughtVisibleTo = time.Time{}
+	model.turnStarted = started
+	model.turnGeneration++
 	model.transient = ""
 	model.cancel = cancel
 	model.canceling = false
@@ -280,13 +356,24 @@ func (model *Model) submit() tea.Cmd {
 	model.input.Blur()
 	model.configureInputGeometry()
 
-	return model.queueStaticOutput(startQuery(model.responder, ctx, core.UserMessage(entry.Text)))
+	return model.queueStaticOutput(startQuery(
+		model.responder,
+		ctx,
+		model.turnGeneration,
+		core.UserMessage(entry.Text),
+	))
 }
 
-func startQuery(responder Responder, ctx context.Context, message core.Message) tea.Cmd {
+func statusTick(generation uint64) tea.Cmd {
+	return tea.Tick(spinnerTickInterval, func(now time.Time) tea.Msg {
+		return statusTickMsg{generation: generation, at: now}
+	})
+}
+
+func startQuery(responder Responder, ctx context.Context, generation uint64, message core.Message) tea.Cmd {
 	return func() tea.Msg {
 		events := responder.SubmitEvents(ctx, message, queryEventBuffer)
-		return receiveQueryEvent(events)
+		return receiveQueryEvent(ctx, generation, events)
 	}
 }
 
@@ -325,23 +412,31 @@ func (model Model) renderStaticOutput(includeHeader bool, entries []session.Entr
 	return strings.Join(lines, "\n")
 }
 
-func nextQueryEvent(events <-chan query.Event) tea.Cmd {
+func nextQueryEvent(ctx context.Context, generation uint64, events <-chan query.Event) tea.Cmd {
 	return func() tea.Msg {
-		return receiveQueryEvent(events)
+		return receiveQueryEvent(ctx, generation, events)
 	}
 }
 
-func receiveQueryEvent(events <-chan query.Event) queryEventMsg {
+func receiveQueryEvent(ctx context.Context, generation uint64, events <-chan query.Event) queryEventMsg {
 	if events == nil {
-		return queryEventMsg{}
+		return queryEventMsg{ctx: ctx, generation: generation}
 	}
-	event, ok := <-events
-	return queryEventMsg{event: event, events: events, ok: ok}
+	select {
+	case <-ctx.Done():
+		return queryEventMsg{ctx: ctx, generation: generation, canceled: true}
+	case event, ok := <-events:
+		return queryEventMsg{ctx: ctx, event: event, events: events, generation: generation, ok: ok}
+	}
 }
 
 func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd) {
-	if !model.busy {
+	if message.generation != model.turnGeneration || !model.busy {
 		return *model, nil
+	}
+	if message.canceled {
+		model.finishQuery(nil)
+		return *model, model.input.Focus()
 	}
 	if !message.ok {
 		if model.canceling {
@@ -354,6 +449,7 @@ func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd)
 
 	switch message.event.Type {
 	case query.EventStream:
+		model.updateStatusFromStream(message.event.Stream)
 		if stream := message.event.Stream; stream != nil &&
 			stream.Type == "content_block_delta" && stream.Delta != nil && stream.Delta.Type == "text_delta" {
 			model.transient += stream.Delta.Text
@@ -364,14 +460,65 @@ func (model *Model) handleQueryEvent(message queryEventMsg) (tea.Model, tea.Cmd)
 			if err := model.session.AppendAssistant(text); err != nil {
 				model.err = err
 			} else {
-				return *model, model.queueStaticOutput(nextQueryEvent(message.events))
+				return *model, model.queueStaticOutput(nextQueryEvent(message.ctx, message.generation, message.events))
 			}
 		}
 	case query.EventCompleted:
-		model.finishQuery(completionError(message.event))
+		completionErr := completionError(message.event)
+		completedAt := time.Now()
+		if model.shouldAppendTurnDuration(message.event, completedAt) {
+			duration := completedAt.Sub(model.turnStarted)
+			verb := turnCompletionVerbs[rand.IntN(len(turnCompletionVerbs))]
+			completionErr = errors.Join(completionErr, model.session.AppendTurnDuration(
+				fmt.Sprintf("%s for %s", verb, formatTurnDuration(duration)),
+			))
+		}
+		model.finishQuery(completionErr)
 		return *model, model.queueStaticOutput(model.input.Focus())
 	}
-	return *model, nextQueryEvent(message.events)
+	return *model, nextQueryEvent(message.ctx, message.generation, message.events)
+}
+
+func (model *Model) updateStatusFromStream(stream *anthropicapi.StreamEvent) {
+	if stream == nil {
+		return
+	}
+	previous := model.statusMode
+	switch stream.Type {
+	case anthropicapi.StreamEventContentBlockStart:
+		if stream.Block == nil {
+			return
+		}
+		switch stream.Block.Type {
+		case core.ContentBlockThinking:
+			model.statusMode = statusThinking
+		case core.ContentBlockText:
+			model.statusMode = statusResponding
+		case core.ContentBlockToolUse, core.ContentBlockServerToolUse:
+			model.statusMode = statusToolUse
+		}
+	case anthropicapi.StreamEventContentBlockDelta:
+		if stream.Delta == nil {
+			return
+		}
+		switch stream.Delta.Type {
+		case "thinking_delta":
+			model.statusMode = statusThinking
+		case "text_delta":
+			model.statusMode = statusResponding
+		case "input_json_delta":
+			model.statusMode = statusToolUse
+		}
+	}
+	if model.statusMode != statusThinking && !model.thinkingStarted.IsZero() &&
+		(previous == statusThinking || model.statusMode == statusResponding || model.statusMode == statusToolUse) {
+		model.thoughtDuration = time.Since(model.thinkingStarted)
+		model.thoughtVisibleTo = time.Now().Add(2 * time.Second)
+		model.thinkingStarted = time.Time{}
+	}
+	if previous != statusThinking && model.statusMode == statusThinking && model.thinkingStarted.IsZero() {
+		model.thinkingStarted = time.Now()
+	}
 }
 
 func (model *Model) finishQuery(err error) {
@@ -380,6 +527,14 @@ func (model *Model) finishQuery(err error) {
 	}
 	model.busy = false
 	model.status = ""
+	model.statusFrame = 0
+	model.statusStarted = time.Time{}
+	model.statusElapsed = 0
+	model.statusTicking = false
+	model.thinkingStarted = time.Time{}
+	model.thoughtDuration = 0
+	model.thoughtVisibleTo = time.Time{}
+	model.turnStarted = time.Time{}
 	model.transient = ""
 	model.cancel = nil
 	model.canceling = false
@@ -396,6 +551,36 @@ func (model *Model) finishQuery(err error) {
 		}
 	}
 	model.configureInputGeometry()
+}
+
+func (model Model) shouldAppendTurnDuration(event query.Event, completedAt time.Time) bool {
+	if model.canceling || model.turnStarted.IsZero() || completedAt.Sub(model.turnStarted) <= turnDurationThreshold {
+		return false
+	}
+	return event.Result == nil || event.Result.Outcome != query.OutcomeCanceled
+}
+
+func formatTurnDuration(duration time.Duration) string {
+	if duration < time.Minute {
+		return fmt.Sprintf("%ds", max(0, int(duration/time.Second)))
+	}
+
+	totalSeconds := int64((duration + 500*time.Millisecond) / time.Second)
+	minutes := totalSeconds / 60
+	seconds := totalSeconds % 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+
+	hours := minutes / 60
+	minutes %= 60
+	if hours < 24 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+
+	days := hours / 24
+	hours %= 24
+	return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
 }
 
 func completionError(event query.Event) error {
@@ -608,8 +793,76 @@ func (model Model) busyStatusLine() string {
 	if model.transient != "" && !model.canceling {
 		return ""
 	}
-	status := lipgloss.NewStyle().Foreground(model.palette.claude).Render("● " + model.status)
+
+	frame := spinnerFrames[model.statusFrame%len(spinnerFrames)]
+	frameText := lipgloss.NewStyle().Foreground(model.palette.claude).Render(frame + " ")
+	message := model.renderSpinnerMessage(model.status)
+
+	suffix := ""
+	suffixColor := model.palette.inactive
+	now := time.Now()
+	switch {
+	case model.canceling:
+		message = lipgloss.NewStyle().Foreground(model.palette.claude).Render(model.status)
+	case model.thoughtDuration > 0 && now.Before(model.thoughtVisibleTo):
+		seconds := max(1, int(model.thoughtDuration.Round(time.Second)/time.Second))
+		suffix = fmt.Sprintf(" (thought for %ds)", seconds)
+	case model.statusMode == statusThinking && !model.thinkingStarted.IsZero():
+		suffix = " (thinking)"
+		if model.statusElapsed >= 3*time.Second {
+			phase := float64(model.statusElapsed-3*time.Second) / float64(2*time.Second) * 2 * math.Pi
+			intensity := (math.Sin(phase) + 1) / 2
+			suffixColor = blendTerminalColor(model.colorProfile, model.palette.inactive, lipgloss.Color("#b9b9b9"), intensity)
+		}
+	}
+
+	status := frameText + message
+	if suffix != "" {
+		status += lipgloss.NewStyle().Foreground(suffixColor).Render(suffix)
+	}
 	return padDisplay(status, model.width)
+}
+
+func (model Model) renderSpinnerMessage(message string) string {
+	if message == "" {
+		return ""
+	}
+
+	runes := []rune(message)
+	speed := 200 * time.Millisecond
+	if model.statusMode == statusRequesting {
+		speed = 50 * time.Millisecond
+	}
+	cycleLength := float64(len(runes) + 20)
+	cyclePosition := math.Mod(float64(model.statusElapsed)/float64(speed), cycleLength)
+	glimmerPosition := float64(len(runes)) + 10 - cyclePosition
+	if model.statusMode == statusRequesting {
+		glimmerPosition = cyclePosition - 10
+	}
+
+	var rendered strings.Builder
+	for index, character := range runes {
+		distance := math.Abs(float64(index) - glimmerPosition)
+		intensity := max(0, 1-distance/2)
+		foreground := blendTerminalColor(model.colorProfile, model.palette.claude, model.palette.text, intensity)
+		rendered.WriteString(lipgloss.NewStyle().Foreground(foreground).Render(string(character)))
+	}
+	return rendered.String()
+}
+
+func blendTerminalColor(profile colorprofile.Profile, from, to color.Color, amount float64) color.Color {
+	amount = min(1, max(0, amount))
+	fromR, fromG, fromB, _ := from.RGBA()
+	toR, toG, toB, _ := to.RGBA()
+	blend := func(start, end uint32) uint8 {
+		return uint8(math.Round((float64(start) + (float64(end)-float64(start))*amount) / 257))
+	}
+	return profile.Convert(color.RGBA{
+		R: blend(fromR, toR),
+		G: blend(fromG, toG),
+		B: blend(fromB, toB),
+		A: 0xff,
+	})
 }
 
 func (model Model) renderFooter() []string {
@@ -709,6 +962,8 @@ func (model Model) renderTranscriptEntries(entries []session.Entry, start, end i
 		switch {
 		case entry.Style == session.EntryStyleError:
 			model.renderErrorEntry(&builder, entry.Text)
+		case entry.Style == session.EntryStyleTurnDuration:
+			model.renderTurnDurationEntry(&builder, entry.Text)
 		case entry.Role == core.RoleUser:
 			model.renderUserEntry(&builder, entry.Text)
 		case entry.Role == core.RoleAssistant:
@@ -739,6 +994,12 @@ func (model Model) renderAssistantEntry(builder *strings.Builder, text string) {
 	style := lipgloss.NewStyle().Foreground(model.palette.text)
 	pointer := lipgloss.NewStyle().Foreground(model.palette.text).Render("● ")
 	model.renderPrefixedEntry(builder, text, pointer, style, false)
+}
+
+// renderTurnDurationEntry matches the source's persisted dim completion row.
+func (model Model) renderTurnDurationEntry(builder *strings.Builder, text string) {
+	style := lipgloss.NewStyle().Foreground(model.palette.inactive)
+	model.renderPrefixedEntry(builder, text, style.Render("✻ "), style, false)
 }
 
 // renderErrorEntry matches source MessageResponse: dim "  ⎿ " plus error-colored text.
